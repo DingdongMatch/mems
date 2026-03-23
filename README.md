@@ -29,7 +29,7 @@ The current repository already implements a runnable four-layer memory pipeline.
 |-------|--------------------|
 | L0: Instant Layer | Ongoing conversation, current task state, chain-of-thought in progress |
 | L1: Episodic Layer | Raw conversation records and recent event details |
-| L2: Semantic Layer | Distilled user profile, factual knowledge, and behavioral preferences |
+| L2: Semantic Layer | Distilled user profile, factual knowledge, behavioral preferences, and rolling summaries |
 | L3: Archive Layer | Full historical logs, annual summaries, and inactive knowledge |
 
 ## Quick Start
@@ -56,30 +56,33 @@ uv run python -m mems.main
 # Health check
 curl http://localhost:8000/health
 
-# Recommended: Write to L0 (auto-sync to L1)
-curl -X POST http://localhost:8000/l0/write \
+# Write memory
+curl -X POST http://localhost:8000/memories/write \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "test", "session_id": "s1", "messages": [{"role": "user", "content": "Test content"}]}'
 
 # Search
-curl -X POST http://localhost:8000/search \
+curl -X POST http://localhost:8000/memories/search \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "test", "query": "test"}'
+
+# Monitor
+curl http://localhost:8000/monitor/status
 ```
 
 ## Automation Pipeline
 
 ```
-User writes to L0 → Auto L1 → Auto L2 → Auto L3
+User writes memory → Auto L0 → Auto L1 → Auto L2 → Auto L3
      │
-     └─→ /l0/write → L0 (Redis)
-                       │
-                       │ (auto-sync)
-                       ▼
-                     L1 (SQL + Qdrant + JSONL)
-                       │
-       ┌───────────────┴───────────────┐
-       │                               │
+     └─→ /memories/write → L0 (Redis)
+                             │
+                             │ (auto-persist)
+                             ▼
+                           L1 (SQL + Qdrant + JSONL)
+                        │
+        ┌───────────────┴───────────────┐
+        │                               │
        │ (threshold >100 or daily 2:00)│ (daily 3:00)
        ▼                               ▼
      L2 (Knowledge Triplets)        L3 (Archive)
@@ -89,12 +92,14 @@ User writes to L0 → Auto L1 → Auto L2 → Auto L3
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/l0/write` | POST | Write to L0, **auto-sync to L1** (recommended) |
-| `/l0/read/{agent_id}/{session_id}` | GET | Read from L0 |
-| `/ingest` | POST | Write directly to L1 |
-| `/search` | POST | Hybrid search |
-| `/distill` | POST | Memory distillation (manual trigger) |
-| `/archive` | POST | Archive (manual trigger) |
+| `/memories/write` | POST | Write memory and let the system auto-persist to L0/L1 |
+| `/memories/search` | POST | Query memory with internal episodic/profile/fact/summary retrieval |
+| `/monitor/status` | GET | View service health, scheduler state, and pipeline backlog |
+| `/health` | GET | Lightweight process health probe |
+
+Archive now behaves as cold storage: old memories are exported to L3 and marked as archived, but remain searchable online.
+
+The distillation pipeline now follows `Filter -> Extract -> Reconcile -> Commit`, and stores L2 memory as profile items, facts, events, summaries, and conflict logs.
 
 ## Documentation
 
@@ -102,7 +107,6 @@ User writes to L0 → Auto L1 → Auto L2 → Auto L3
 - [Vibe Coding Guide](docs/VIBE_CODING_en.md) - How to use AI-assisted development
 - [中文文档](docs/TECHNICAL.md) - 中文技术文档
 - [Vibe Coding 指南](docs/VIBE_CODING.md) - 中文开发指南
-- [Project Review](docs/PROJECT_REVIEW_20260323.md) - Current project audit and risk notes
 - [中文版 README](README_zh.md)
 
 ## Swagger API Docs
@@ -130,11 +134,8 @@ mems/
 │   │   ├── distill.py       # Distillation + threshold detection
 │   │   └── archive.py       # Archive + auto-trigger
 │   └── routers/
-│       ├── l0.py            # /l0 (recommended entry)
-│       ├── ingest.py
-│       ├── search.py
-│       ├── distill.py
-│       └── archive.py
+│       ├── memories.py      # /memories/write + /memories/search
+│       └── monitor.py       # /monitor/status
 ├── scripts/
 │   ├── init_db.py
 │   └── reader.py            # L3 reader (pure stdlib)

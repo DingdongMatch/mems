@@ -1,7 +1,7 @@
 import uuid
 import logging
 from typing import List, Dict, Any, Optional
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from mems.config import settings
 from mems.models import MemsL1Episodic
@@ -22,13 +22,13 @@ async def sync_l0_to_l1(
 ) -> Optional[int]:
     """
     将 L0 工作记忆同步到 L1
-    
+
     Args:
         l0_data: L0 工作记忆数据
         session: 数据库会话
         importance_score: 重要性评分
         metadata: 额外元数据
-    
+
     Returns:
         L1 记录 ID，失败返回 None
     """
@@ -42,8 +42,10 @@ async def sync_l0_to_l1(
                 content_parts.append(f"{role}: {content}")
             content = "\n".join(content_parts)
         else:
-            content = f"Active plan: {l0_data.active_plan}" if l0_data.active_plan else ""
-        
+            content = (
+                f"Active plan: {l0_data.active_plan}" if l0_data.active_plan else ""
+            )
+
         if not content:
             logger.warning("L0 data is empty, skipping sync to L1")
             return None
@@ -57,22 +59,6 @@ async def sync_l0_to_l1(
         # 生成向量
         embeddings = await embedding_service.embed([content])
         vector = embeddings[0]
-
-        # 写入 Qdrant
-        await vector_service.upsert(
-            collection_name=f"agent_{l0_data.agent_id}",
-            points=[
-                {
-                    "id": vector_id,
-                    "vector": vector,
-                    "payload": {
-                        "agent_id": l0_data.agent_id,
-                        "session_id": l0_data.session_id,
-                        "content": content,
-                    },
-                }
-            ],
-        )
 
         # 合并元数据
         full_metadata = metadata or {}
@@ -91,6 +77,25 @@ async def sync_l0_to_l1(
             metadata_json=full_metadata,
         )
         session.add(l1_record)
+        session.flush()
+
+        await vector_service.upsert(
+            collection_name=f"agent_{l0_data.agent_id}",
+            points=[
+                {
+                    "id": vector_id,
+                    "vector": vector,
+                    "payload": {
+                        "l1_id": l1_record.id,
+                        "vector_id": vector_id,
+                        "agent_id": l0_data.agent_id,
+                        "session_id": l0_data.session_id,
+                        "content": content,
+                    },
+                }
+            ],
+        )
+
         session.commit()
         session.refresh(l1_record)
 
@@ -111,7 +116,9 @@ async def sync_l0_to_l1(
             },
         )
 
-        logger.info(f"L0 synced to L1: agent={l0_data.agent_id}, session={l0_data.session_id}, l1_id={l1_record.id}")
+        logger.info(
+            f"L0 synced to L1: agent={l0_data.agent_id}, session={l0_data.session_id}, l1_id={l1_record.id}"
+        )
         return l1_record.id
 
     except Exception as e:

@@ -7,13 +7,16 @@ from mems.config import settings
 engine = create_engine(
     settings.DATABASE_URL,
     echo=settings.LOG_LEVEL == "DEBUG",
-    connect_args={"check_same_thread": False} if "sqlite" in settings.DATABASE_URL else {},
+    connect_args={"check_same_thread": False}
+    if "sqlite" in settings.DATABASE_URL
+    else {},
 )
 
 
 def init_db() -> None:
     """初始化数据库表"""
-    from mems.models import MemsL1Episodic, MemsL2Semantic, MemsL3Archive
+    import mems.models  # noqa: F401
+
     SQLModel.metadata.create_all(engine)
 
 

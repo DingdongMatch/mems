@@ -1,6 +1,5 @@
 from typing import Dict, List, Any, Optional
 import httpx
-import numpy as np
 
 from mems.config import settings
 
@@ -12,11 +11,17 @@ class VectorService:
         self._base_url = f"http://{settings.QDRANT_HOST}:{settings.QDRANT_PORT}"
 
     async def _request(self, method: str, path: str, **kwargs) -> Dict[str, Any]:
+        headers = kwargs.pop("headers", {})
+        if settings.QDRANT_API_KEY:
+            headers["api-key"] = settings.QDRANT_API_KEY
+
         async with httpx.AsyncClient() as client:
             response = await client.request(
                 method,
                 f"{self._base_url}{path}",
-                **kwargs
+                headers=headers,
+                timeout=settings.QDRANT_TIMEOUT,
+                **kwargs,
             )
             response.raise_for_status()
             return response.json()
@@ -32,12 +37,7 @@ class VectorService:
             await self._request(
                 "PUT",
                 f"/collections/{collection_name}",
-                json={
-                    "vectors": {
-                        "size": vector_size,
-                        "distance": "Cosine"
-                    }
-                }
+                json={"vectors": {"size": vector_size, "distance": "Cosine"}},
             )
         return True
 
@@ -54,11 +54,11 @@ class VectorService:
                     {
                         "id": p["id"],
                         "vector": p["vector"],
-                        "payload": p.get("payload", {})
+                        "payload": p.get("payload", {}),
                     }
                     for p in points
                 ]
-            }
+            },
         )
         return True
 
@@ -77,18 +77,11 @@ class VectorService:
 
         if filter_agent_id:
             json_body["filter"] = {
-                "must": [
-                    {
-                        "key": "agent_id",
-                        "match": {"value": filter_agent_id}
-                    }
-                ]
+                "must": [{"key": "agent_id", "match": {"value": filter_agent_id}}]
             }
 
         result = await self._request(
-            "POST",
-            f"/collections/{collection_name}/points/search",
-            json=json_body
+            "POST", f"/collections/{collection_name}/points/search", json=json_body
         )
 
         return [
@@ -103,6 +96,18 @@ class VectorService:
     async def delete_collection(self, collection_name: str) -> bool:
         """删除 Collection"""
         await self._request("DELETE", f"/collections/{collection_name}")
+        return True
+
+    async def delete_points(self, collection_name: str, point_ids: List[str]) -> bool:
+        """删除指定向量点"""
+        if not point_ids:
+            return True
+
+        await self._request(
+            "POST",
+            f"/collections/{collection_name}/points/delete?wait=true",
+            json={"points": point_ids},
+        )
         return True
 
 

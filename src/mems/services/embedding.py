@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
-import numpy as np
+from typing import List, cast
 
 
 class EmbeddingProvider(ABC):
@@ -28,23 +27,30 @@ class SentenceTransformersProvider(EmbeddingProvider):
     async def _load_model(self):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
+
             self._model = SentenceTransformer(self.model_name)
             self._dimension = self._model.get_sentence_embedding_dimension()
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         await self._load_model()
-        embeddings = self._model.encode(texts, convert_to_numpy=True)
+        model = cast(object, self._model)
+        embeddings = model.encode(texts, convert_to_numpy=True)
         return [emb.tolist() for emb in embeddings]
 
     async def get_dimension(self) -> int:
         await self._load_model()
-        return self._dimension
+        return cast(int, self._dimension)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     """OpenAI API 向量化"""
 
-    def __init__(self, api_key: str, model: str = "text-embedding-3-small", base_url: str = "https://api.openai.com/v1"):
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "text-embedding-3-small",
+        base_url: str = "https://api.openai.com/v1",
+    ):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
@@ -52,6 +58,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         import httpx
+
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"{self.base_url}/embeddings",
@@ -84,7 +91,9 @@ def get_embedding_provider() -> EmbeddingProvider:
         return SentenceTransformersProvider(settings.SENTENCE_TRANSFORMERS_MODEL)
     elif settings.EMBEDDING_PROVIDER == "openai":
         if not settings.OPENAI_EMBEDDING_API_KEY:
-            raise ValueError("OPENAI_EMBEDDING_API_KEY is required when using openai provider")
+            raise ValueError(
+                "OPENAI_EMBEDDING_API_KEY is required when using openai provider"
+            )
         return OpenAIEmbeddingProvider(
             settings.OPENAI_EMBEDDING_API_KEY,
             settings.OPENAI_EMBEDDING_MODEL,

@@ -1,5 +1,4 @@
-import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 import redis.asyncio as redis
 
@@ -33,12 +32,12 @@ class RedisService:
         session_id: str,
         messages: List[Dict[str, str]],
         active_plan: Optional[str] = None,
-        temp_variables: Dict[str, Any] = None,
+        temp_variables: Dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
     ) -> MemsL0Working:
         """写入 L0 工作记忆"""
         client = await self.get_client()
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl_seconds)
+        expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
 
         l0_data = MemsL0Working(
             agent_id=agent_id,

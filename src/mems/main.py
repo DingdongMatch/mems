@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from mems.config import settings
 from mems.database import init_db
-from mems.routers import ingest, search, distill, archive, l0
+from mems.routers import memories, monitor
 from mems.services.scheduler import scheduler_service
 
 
@@ -18,11 +18,11 @@ async def lifespan(app: FastAPI):
     Path(settings.storage_l1_path).mkdir(parents=True, exist_ok=True)
     Path(settings.storage_l2_path).mkdir(parents=True, exist_ok=True)
     Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
-    
+
     if settings.SCHEDULER_ENABLED:
         from mems.services.distill import trigger_distill_automatically
         from mems.services.archive import trigger_archive_automatically
-        
+
         scheduler_service.add_distill_job(
             trigger_distill_automatically,
             hour=settings.DISTILL_CRON_HOUR,
@@ -35,9 +35,9 @@ async def lifespan(app: FastAPI):
         )
         scheduler_service.start()
         logger.info("Scheduler started with distill and archive jobs")
-    
+
     yield
-    
+
     if settings.SCHEDULER_ENABLED:
         scheduler_service.shutdown()
 
@@ -49,11 +49,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.include_router(ingest.router)
-app.include_router(search.router)
-app.include_router(distill.router)
-app.include_router(archive.router)
-app.include_router(l0.router)
+app.include_router(memories.router)
+app.include_router(monitor.router)
 
 
 @app.get("/health")
@@ -64,7 +61,10 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     from pathlib import Path
+
     Path("storage/l1_raw").mkdir(parents=True, exist_ok=True)
     Path("storage/l2_knowledge").mkdir(parents=True, exist_ok=True)
     Path("storage/l3_archive").mkdir(parents=True, exist_ok=True)
-    uvicorn.run("mems.main:app", host=settings.APP_HOST, port=settings.APP_PORT, reload=True)
+    uvicorn.run(
+        "mems.main:app", host=settings.APP_HOST, port=settings.APP_PORT, reload=True
+    )

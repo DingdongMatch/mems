@@ -29,7 +29,7 @@
 |------|----------|
 | L0: 瞬时层 | 正在进行的对话、当前任务的思考链 (CoT) |
 | L1: 情景层 | 原始对话记录、最近发生的特定事件细节 |
-| L2: 语义层 | 提炼后的用户画像、事实知识、行为偏好 |
+| L2: 语义层 | 提炼后的用户画像、事实知识、行为偏好与滚动摘要 |
 | L3: 归档层 | 历史全量日志、年度总结、不再活跃的旧知识 |
 
 ## 快速开始
@@ -56,27 +56,30 @@ uv run python -m mems.main
 # 健康检查
 curl http://localhost:8000/health
 
-# 推荐：写入 L0（自动同步到 L1）
-curl -X POST http://localhost:8000/l0/write \
+# 写入记忆
+curl -X POST http://localhost:8000/memories/write \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "test", "session_id": "s1", "messages": [{"role": "user", "content": "测试内容"}]}'
 
 # 搜索
-curl -X POST http://localhost:8000/search \
+curl -X POST http://localhost:8000/memories/search \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "test", "query": "测试"}'
+
+# 监看检测
+curl http://localhost:8000/monitor/status
 ```
 
 ## 自动化流水线
 
 ```
-用户写入 L0 → 自动 L1 → 自动 L2 → 自动 L3
+用户写入记忆 → 自动 L0 → 自动 L1 → 自动 L2 → 自动 L3
      │
-     └─→ /l0/write → L0 (Redis)
-                      │
-                      │ (自动同步)
-                      ▼
-                    L1 (SQL + Qdrant + JSONL)
+     └─→ /memories/write → L0 (Redis)
+                             │
+                             │ (自动持久化)
+                             ▼
+                           L1 (SQL + Qdrant + JSONL)
                       │
       ┌───────────────┴───────────────┐
       │                               │
@@ -89,12 +92,14 @@ curl -X POST http://localhost:8000/search \
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/l0/write` | POST | 写入 L0，**自动同步到 L1** (推荐) |
-| `/l0/read/{agent_id}/{session_id}` | GET | 读取 L0 |
-| `/ingest` | POST | 直接写入 L1 |
-| `/search` | POST | 混合检索 |
-| `/distill` | POST | 记忆蒸馏 (手动触发) |
-| `/archive` | POST | 归档 (手动触发) |
+| `/memories/write` | POST | 写入记忆，由系统自动持久化到 L0/L1 |
+| `/memories/search` | POST | 查询记忆，内部统一执行情景/画像/事实/摘要混合检索 |
+| `/monitor/status` | GET | 查看服务健康、调度状态和流水线积压 |
+| `/health` | GET | 轻量级进程健康探针 |
+
+当前归档采用冷存模式：旧记忆会导出到 L3 并标记为已归档，但仍保留在线查询能力。
+
+当前蒸馏流水线采用 `Filter -> Extract -> Reconcile -> Commit`，L2 会分别沉淀为画像项、事实项、事件、滚动摘要与冲突日志。
 
 ## 文档
 
@@ -102,7 +107,6 @@ curl -X POST http://localhost:8000/search \
 - [Vibe Coding 指导](docs/VIBE_CODING.md) - 如何高效使用 AI 辅助开发
 - [Technical Docs (EN)](docs/TECHNICAL_en.md) - English technical documentation
 - [Vibe Coding Guide (EN)](docs/VIBE_CODING_en.md) - English Vibe Coding guide
-- [项目 Review 报告](docs/PROJECT_REVIEW_20260323.md) - 当前项目审查与风险说明
 - [English README](README.md)
 
 ## Swagger API 文档
@@ -130,11 +134,8 @@ mems/
 │   │   ├── distill.py       # 蒸馏 + 阈值检测
 │   │   └── archive.py       # 归档 + 自动触发
 │   └── routers/
-│       ├── l0.py            # /l0 (推荐入口)
-│       ├── ingest.py
-│       ├── search.py
-│       ├── distill.py
-│       └── archive.py
+│       ├── memories.py      # /memories/write + /memories/search
+│       └── monitor.py       # /monitor/status
 ├── scripts/
 │   ├── init_db.py
 │   └── reader.py           # L3 读取器 (纯标准库)

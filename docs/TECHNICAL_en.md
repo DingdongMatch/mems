@@ -10,7 +10,7 @@
 - **Four-layer Memory Architecture**: L0(Redis) → L1(SQL+Vector) → L2(SQL+JSONL) → L3(JSONL Archive)
 - **Multi-tenant Isolation**: Each Agent has independent storage with physical isolation
 - **Vector Search**: Semantic search based on Qdrant
-- **Memory Distillation**: L1→L2 automatic knowledge triplet extraction
+- **Memory Distillation**: L1→L2 automatic filter, extract, reconcile, and commit pipeline
 - **Centennial Archive**: Pure text JSONL format, readable across eras
 
 ---
@@ -93,7 +93,7 @@ The current codebase is a runnable reference implementation. For system design a
 |-------|--------------------|
 | L0: Instant Layer | Ongoing conversation, current task state, and chain-of-thought in progress |
 | L1: Episodic Layer | Raw conversation records and recent event details |
-| L2: Semantic Layer | Distilled user profile, factual knowledge, and behavioral preferences |
+| L2: Semantic Layer | Distilled user profile, factual knowledge, behavioral preferences, and rolling summaries |
 | L3: Archive Layer | Full historical logs, annual summaries, and inactive knowledge |
 
 ---
@@ -125,8 +125,8 @@ The current codebase is a runnable reference implementation. For system design a
                               ▼                        ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              L2: Semantic Memory (SQLite + JSONL)               │
-│  - Knowledge triplets (subject-predicate-object)                │
-│  - Conflict detection + version management                       │
+│  - Profile items / facts / events / summaries                   │
+│  - Conflict detection + versioning + evidence lineage           │
 │  - Traceable to L1 records                                     │
 │  - Trigger: >100 undisted OR daily 2:00 AM                    │
 └─────────────────────────────────────────────────────────────────┘
@@ -145,17 +145,17 @@ The current codebase is a runnable reference implementation. For system design a
 ### 5.2 Automated Data Flow
 
 ```
-User ──→ /l0/write ──→ L0 (Redis)
-                          │
-                          │ (Auto sync, milliseconds)
-                          ▼
-                    L1 (SQL + Qdrant + JSONL)
+User ──→ /memories/write ──→ L0 (Redis)
+                                 │
+                                 │ (Auto persist)
+                                 ▼
+                           L1 (SQL + Qdrant + JSONL)
                           │
       ┌───────────────────┴───────────────────┐
       │                                       │
       │ (Threshold: >100 undisted)          │ (Daily: 3:00 AM)
       ▼                                       ▼
-  L2 (Knowledge triplets)                  L3 (Archive)
+  L2 (Profile/Facts/Summaries)             L3 (Archive)
 ```
 
 ---
@@ -164,7 +164,7 @@ User ──→ /l0/write ──→ L0 (Redis)
 
 ### 6.1 L0 → L1 Auto Dual Write
 
-When user calls `/l0/write`, system automatically:
+When user calls `/memories/write`, system automatically:
 
 1. Write to Redis (L0) - with TTL
 2. Auto sync to L1 - SQLite + Qdrant + JSONL
@@ -181,9 +181,10 @@ When user calls `/l0/write`, system automatically:
 
 **Processing**:
 1. Query `is_distilled=False` L1 records
-2. Call LLM to extract knowledge triplets
-3. Conflict detection + version management
-4. Write to L2, update L1.is_distilled=True
+2. Filter greetings, low-signal fragments, and ephemeral tasks
+3. Extract profile updates, facts, events, and summary candidates
+4. Reconcile them against existing L2 context
+5. Commit profile/fact/event/summary/conflict records and update `L1.is_distilled=True`
 
 ### 6.3 L1 → L3 Auto Archive
 
@@ -194,7 +195,7 @@ When user calls `/l0/write`, system automatically:
 1. Find L1 records older than 30 days (configurable)
 2. Export to JSONL file
 3. Create L3 index record
-4. Delete original L1 records
+4. Mark the original L1 records as archived while keeping them available for online retrieval
 
 ### 6.4 Scheduler Configuration
 
@@ -213,9 +214,9 @@ When user calls `/l0/write`, system automatically:
 
 ## 7. API Endpoints
 
-### 7.1 L0 Working Memory (Recommended Entry)
+### 7.1 Memory Write
 
-**POST** `/l0/write` - Write to L0 and auto sync to L1
+**POST** `/memories/write` - Write memory and let the system auto-persist to L0/L1
 ```json
 {
   "agent_id": "agent_001",
@@ -230,57 +231,26 @@ When user calls `/l0/write`, system automatically:
 }
 ```
 
-**GET** `/l0/read/{agent_id}/{session_id}` - Read L0
+### 7.2 Memory Search
 
-**DELETE** `/l0/{agent_id}/{session_id}` - Delete L0
-
-**POST** `/l0/commit/{agent_id}/{session_id}` - Manual commit L0 to L1
-
-### 7.2 Memory Ingestion (Direct L1 Write)
-
-**POST** `/ingest`
-```json
-{
-  "agent_id": "agent_001",
-  "session_id": "sess_abc",
-  "content": "User says: I like learning Python",
-  "metadata": {"source": "chat"},
-  "importance_score": 0.8
-}
-```
-
-### 7.3 Hybrid Search
-
-**POST** `/search`
+**POST** `/memories/search`
 ```json
 {
   "agent_id": "agent_001",
   "query": "programming language learning",
-  "top_k": 5,
-  "include_l2": true
+  "top_k": 5
 }
 ```
 
-### 7.4 Memory Distillation (Manual Trigger)
+The retrieval strategy is internal-only: the API does not expose L1/L2 toggles.
 
-**POST** `/distill`
-```json
-{
-  "agent_id": "agent_001",
-  "batch_size": 10,
-  "force": false
-}
-```
+### 7.3 Monitor Status
 
-### 7.5 Archive (Manual Trigger)
+**GET** `/monitor/status` - View dependency health, scheduler state, and pipeline backlog
 
-**POST** `/archive`
-```json
-{
-  "agent_id": "agent_001",
-  "days": 30
-}
-```
+### 7.4 Lightweight Health Probe
+
+**GET** `/health` - Lightweight process liveness endpoint
 
 ---
 
@@ -347,8 +317,8 @@ uv run python -m mems.main
 ### 9.2 Recommended Usage
 
 ```bash
-# 1. Write to L0 (recommended, auto sync to L1)
-curl -X POST http://localhost:8000/l0/write \
+# 1. Write memory
+curl -X POST http://localhost:8000/memories/write \
   -H "Content-Type: application/json" \
   -d '{
     "agent_id": "my_agent",
@@ -356,15 +326,13 @@ curl -X POST http://localhost:8000/l0/write \
     "messages": [{"role": "user", "content": "I like Python"}]
   }'
 
-# 2. Search (auto queries L1 + L2)
-curl -X POST http://localhost:8000/search \
+# 2. Search (internally mixes L1 + L2)
+curl -X POST http://localhost:8000/memories/search \
   -H "Content-Type: application/json" \
   -d '{"agent_id": "my_agent", "query": "Python"}'
 
-# 3. Manual trigger distillation (optional, scheduler auto triggers)
-curl -X POST http://localhost:8000/distill \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "my_agent", "batch_size": 50}'
+# 3. Monitor service health and backlog
+curl http://localhost:8000/monitor/status
 ```
 
 ---
@@ -420,11 +388,8 @@ mems/
 │   │   ├── archive.py        # Archive service + auto trigger
 │   │   └── jsonl_utils.py    # JSONL utilities
 │   └── routers/
-│       ├── l0.py             # /l0 (recommended entry)
-│       ├── ingest.py          # /ingest
-│       ├── search.py          # /search
-│       ├── distill.py         # /distill
-│       └── archive.py         # /archive
+│       ├── memories.py        # /memories/write + /memories/search
+│       └── monitor.py         # /monitor/status
 ├── scripts/
 │   ├── init_db.py           # Database init
 │   └── reader.py            # L3 reader (stdlib only)
@@ -438,7 +403,7 @@ mems/
 
 ## 12. Notes
 
-1. **Automation First**: Use `/l0/write`, system auto syncs to L1
+1. **Automation First**: Use `/memories/write`, system auto-persists through the pipeline
 2. **Text-first**: All data must be written to JSONL simultaneously
 3. **Agent Isolation**: Each Agent uses independent Collections
 4. **Version Management**: When L2 conflicts, old version inactive, new version +1
@@ -458,7 +423,7 @@ A: Check: 1) Threshold reached (default 100)? 2) Scheduler enabled? 3) LLM avail
 A: Time-based (daily 3:00 AM), auto archive data older than 30 days
 
 **Q: Can I trigger manually?**
-A: Yes, use `/distill` and `/archive` endpoints
+A: No public manual trigger endpoints are exposed; distill and archive run automatically in the background
 
 ---
 

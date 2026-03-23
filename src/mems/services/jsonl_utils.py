@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -13,17 +13,24 @@ class JsonlWriter:
         self.dir_path.mkdir(parents=True, exist_ok=True)
 
     def _get_filename(self, agent_id: str, date: Optional[datetime] = None) -> str:
-        date = date or datetime.utcnow()
+        date = date or datetime.now(timezone.utc)
         return f"{self.prefix}_{agent_id}_{date.strftime('%Y%m%d')}.jsonl"
 
-    def write(self, agent_id: str, data: Dict[str, Any], date: Optional[datetime] = None) -> Path:
+    def write(
+        self, agent_id: str, data: Dict[str, Any], date: Optional[datetime] = None
+    ) -> Path:
         filename = self._get_filename(agent_id, date)
         filepath = self.dir_path / filename
         with open(filepath, "a", encoding="utf-8") as f:
             f.write(json.dumps(data, ensure_ascii=False) + "\n")
         return filepath
 
-    def write_batch(self, agent_id: str, data_list: List[Dict[str, Any]], date: Optional[datetime] = None) -> Path:
+    def write_batch(
+        self,
+        agent_id: str,
+        data_list: List[Dict[str, Any]],
+        date: Optional[datetime] = None,
+    ) -> Path:
         filename = self._get_filename(agent_id, date)
         filepath = self.dir_path / filename
         with open(filepath, "a", encoding="utf-8") as f:
@@ -67,5 +74,5 @@ class JsonlReader:
             pattern = f"{prefix}_{agent_id}_{current.strftime('%Y%m%d')}.jsonl"
             for filepath in self.dir_path.glob(pattern):
                 results.extend(self.read(filepath))
-            current = datetime(current.year, current.month, current.day + 1)
+            current = current + timedelta(days=1)
         return results
