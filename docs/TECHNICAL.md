@@ -317,6 +317,16 @@ class MemsL3Archive(SQLModel, table=True):
 
 检索策略完全由系统内部决定，不对外暴露 L1/L2 开关。
 
+系统内部会执行 query intent routing 和 freshness-aware ranking，在情景、画像、事实、事件、摘要之间自动选择更合适的召回与排序。
+
+滚动摘要也会写入共享的 Agent 向量集合，`/monitor/status` 会基于 `last_verified_at` 暴露陈旧画像/事实/摘要数量。
+
+### 开发环境重置
+
+```bash
+uv run python scripts/reset_dev_state.py
+```
+
 ### 8.3 监看检测
 
 **GET** `/monitor/status` - 查看依赖健康、调度状态和流水线积压
@@ -401,7 +411,13 @@ python scripts/init_db.py
 uv run python -m mems.main
 ```
 
-### 10.2 推荐使用流程
+### 10.2 重置开发环境
+
+```bash
+uv run python scripts/reset_dev_state.py
+```
+
+### 10.3 推荐使用流程
 
 ```bash
 # 1. 写入记忆
@@ -495,10 +511,31 @@ mems/
 3. **Agent 隔离**: 每个 Agent 使用独立 Collection，实现物理隔离
 4. **版本管理**: L2 知识冲突时，旧版本标记为非活跃，新版本+1
 5. **LLM 配置**: 蒸馏需要 OpenAI/DashScope API，否则只标记不提取
+6. **时效性**: `last_verified_at` 会参与排序与陈旧记忆监控
 
 ---
 
-## 14. 常见问题
+## 14. 当前进度与规划
+
+### 当前进度
+
+- 对外 API 已收敛为 `POST /memories/write`、`POST /memories/search`、`GET /monitor/status`
+- 蒸馏已采用 typed extraction，并落地为画像/事实/事件/摘要/冲突日志
+- 归档会保留 L1 在线可查，同时导出 L3 冷存
+- 搜索已支持 query intent routing、freshness-aware ranking 与摘要向量召回
+- 自动化回归测试已覆盖写入/查询/归档/蒸馏/对账主链路
+
+### 后续规划
+
+- 增加陈旧语义记忆的自动复核任务
+- 为画像与事实补齐向量索引
+- 提升 reconciliation 的冲突分类与置信度合并能力
+- 增加按周、按月滚动摘要
+- 增加检索质量和蒸馏质量评测工具
+
+---
+
+## 15. 常见问题
 
 **Q: L0 自动双写需要配置什么？**
 A: 确保 `L0_AUTO_SYNC_L1=true`，无需其他配置

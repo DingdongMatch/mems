@@ -135,6 +135,7 @@ def test_memory_pipeline_end_to_end(test_app):
         assert len(fact_items) >= 1
         assert len(event_items) >= 1
         assert len(summary_items) >= 1
+        assert summary_items[0].vector_id is not None
         assert len(conflict_items) == 0
 
     with TestClient(app) as client:
@@ -146,6 +147,20 @@ def test_memory_pipeline_end_to_end(test_app):
         distilled_results = search_after_distill.json()["results"]
         assert any(item["source"] == "l2_profile" for item in distilled_results)
         assert any(item["source"] == "l2_fact" for item in distilled_results)
+        assert distilled_results[0]["source"] == "l2_profile"
+
+        summary_search = client.post(
+            "/memories/search",
+            json={
+                "agent_id": "agent_test",
+                "query": "Give me a summary of recent focus",
+                "top_k": 5,
+            },
+        )
+        assert summary_search.status_code == 200
+        summary_results = summary_search.json()["results"]
+        assert any(item["source"] == "l2_summary" for item in summary_results)
+        assert summary_results[0]["source"] == "l2_summary"
 
         monitor_after_distill = client.get("/monitor/status")
         assert monitor_after_distill.status_code == 200
@@ -155,6 +170,9 @@ def test_memory_pipeline_end_to_end(test_app):
         assert pipeline["fact_items"] >= 1
         assert pipeline["summary_items"] >= 1
         assert pipeline["conflict_count"] == 0
+        assert pipeline["stale_profile_items"] == 0
+        assert pipeline["stale_fact_items"] == 0
+        assert pipeline["stale_summary_items"] == 0
 
     assert "agent_agent_test" in vector_service.collections
 

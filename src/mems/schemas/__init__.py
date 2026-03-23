@@ -68,6 +68,9 @@ class MonitorPipelineStatus(BaseModel):
     fact_items: int = 0
     summary_items: int = 0
     conflict_count: int = 0
+    stale_profile_items: int = 0
+    stale_fact_items: int = 0
+    stale_summary_items: int = 0
 
 
 class MonitorStatusResponse(BaseModel):

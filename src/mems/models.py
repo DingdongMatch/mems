@@ -106,8 +106,12 @@ class MemsL2Summary(SQLModel, table=True):
     agent_id: str = Field(index=True)
     summary_type: str = Field(default="long_term", index=True)
     content: str
+    vector_id: Optional[str] = Field(default=None, unique=True, index=True)
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    last_verified_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
 
 
 class MemsL2ConflictLog(SQLModel, table=True):

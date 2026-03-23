@@ -244,6 +244,10 @@ When user calls `/memories/write`, system automatically:
 
 The retrieval strategy is internal-only: the API does not expose L1/L2 toggles.
 
+Internally, search uses query-intent routing and freshness-aware ranking across episodic, profile, fact, event, and summary memories.
+
+Long-term summaries are also vector-indexed in the shared agent collection, and monitor status now exposes stale profile/fact/summary counts derived from `last_verified_at`.
+
 ### 7.3 Monitor Status
 
 **GET** `/monitor/status` - View dependency health, scheduler state, and pipeline backlog
@@ -255,6 +259,12 @@ The retrieval strategy is internal-only: the API does not expose L1/L2 toggles.
 ---
 
 ## 8. Configuration
+
+### Development Reset
+
+```bash
+uv run python scripts/reset_dev_state.py
+```
 
 ### Environment Variables (.env)
 
@@ -314,7 +324,13 @@ python scripts/init_db.py
 uv run python -m mems.main
 ```
 
-### 9.2 Recommended Usage
+### 9.2 Reset Development State
+
+```bash
+uv run python scripts/reset_dev_state.py
+```
+
+### 9.3 Recommended Usage
 
 ```bash
 # 1. Write memory
@@ -408,10 +424,31 @@ mems/
 3. **Agent Isolation**: Each Agent uses independent Collections
 4. **Version Management**: When L2 conflicts, old version inactive, new version +1
 5. **LLM Config**: Distillation requires OpenAI/DashScope API
+6. **Freshness**: `last_verified_at` participates in ranking and stale-memory monitoring
 
 ---
 
-## 13. FAQ
+## 13. Progress and Roadmap
+
+### Current Progress
+
+- Public API has been reduced to `POST /memories/write`, `POST /memories/search`, and `GET /monitor/status`
+- Distillation now uses a typed extraction contract and stores profile/fact/event/summary/conflict records
+- Archive keeps L1 online while exporting cold storage to L3
+- Search uses intent-aware routing, freshness-aware ranking, and summary vector recall
+- Automated regression tests cover write/search/archive/distill/reconciliation flows
+
+### Next Steps
+
+- Add automatic re-verification jobs for stale semantic memory
+- Add vector indexing for profile and fact memories
+- Improve contradiction taxonomy and confidence merging in reconciliation
+- Generate weekly and monthly rolling summaries
+- Add evaluation tooling for retrieval and distillation quality
+
+---
+
+## 14. FAQ
 
 **Q: What config needed for L0 auto sync?**
 A: Just ensure `L0_AUTO_SYNC_L1=true`

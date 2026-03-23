@@ -25,6 +25,8 @@ from mems.services.vector_service import get_vector_service
 
 router = APIRouter(prefix="/monitor", tags=["Monitor"])
 
+STALE_MEMORY_DAYS = 365
+
 
 @router.get("/status", response_model=MonitorStatusResponse)
 async def monitor_status() -> MonitorStatusResponse:
@@ -96,6 +98,30 @@ async def monitor_status() -> MonitorStatusResponse:
         )
         summary_items = len(session.exec(select(MemsL2Summary)).all())
         conflict_count = len(session.exec(select(MemsL2ConflictLog)).all())
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_MEMORY_DAYS)
+        stale_profile_items = len(
+            session.exec(
+                select(MemsL2ProfileItem).where(
+                    MemsL2ProfileItem.status == "active",
+                    MemsL2ProfileItem.last_verified_at < stale_cutoff,
+                )
+            ).all()
+        )
+        stale_fact_items = len(
+            session.exec(
+                select(MemsL2Fact).where(
+                    MemsL2Fact.status == "active",
+                    MemsL2Fact.last_verified_at < stale_cutoff,
+                )
+            ).all()
+        )
+        stale_summary_items = len(
+            session.exec(
+                select(MemsL2Summary).where(
+                    MemsL2Summary.last_verified_at < stale_cutoff
+                )
+            ).all()
+        )
 
     statuses = {item.status for item in checks.values()}
     if "unhealthy" in statuses:
@@ -118,5 +144,8 @@ async def monitor_status() -> MonitorStatusResponse:
             fact_items=fact_items,
             summary_items=summary_items,
             conflict_count=conflict_count,
+            stale_profile_items=stale_profile_items,
+            stale_fact_items=stale_fact_items,
+            stale_summary_items=stale_summary_items,
         ),
     )

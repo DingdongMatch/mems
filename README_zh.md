@@ -68,6 +68,9 @@ curl -X POST http://localhost:8000/memories/search \
 
 # 监看检测
 curl http://localhost:8000/monitor/status
+
+# 重置开发环境并重建数据库
+uv run python scripts/reset_dev_state.py
 ```
 
 ## 自动化流水线
@@ -100,6 +103,27 @@ curl http://localhost:8000/monitor/status
 当前归档采用冷存模式：旧记忆会导出到 L3 并标记为已归档，但仍保留在线查询能力。
 
 当前蒸馏流水线采用 `Filter -> Extract -> Reconcile -> Commit`，L2 会分别沉淀为画像项、事实项、事件、滚动摘要与冲突日志。
+
+当前搜索会在内部做 query intent routing：偏好类问题优先画像记忆，进展类问题优先情景/事件记忆，概括类问题优先滚动摘要。
+
+当前滚动摘要会写入 L2 向量索引，`/monitor/status` 也会基于 `last_verified_at` 暴露陈旧画像/事实/摘要数量。
+
+## 当前进度
+
+- 对外 API 已收敛为 `write / search / monitor`
+- 蒸馏流水线已升级为 `Filter -> Extract -> Reconcile -> Commit`
+- L2 已拆分为画像、事实、事件、摘要、冲突日志五类记忆
+- 归档已改为冷存模式，不影响在线查询
+- 搜索已支持 query intent routing、freshness-aware ranking 与摘要向量召回
+- 自动化回归测试已覆盖写入、查询、归档、蒸馏、对账主链路
+
+## 后续规划
+
+- 增加陈旧画像/事实/摘要的自动复核任务
+- 为画像与事实补齐向量索引，而不只对摘要做向量召回
+- 提升 reconciliation 能力，支持更细的冲突分类与置信度合并
+- 增加按周、按月的滚动摘要
+- 增加检索质量与蒸馏质量评测工具
 
 ## 文档
 

@@ -68,6 +68,9 @@ curl -X POST http://localhost:8000/memories/search \
 
 # Monitor
 curl http://localhost:8000/monitor/status
+
+# Reset development state and rebuild database
+uv run python scripts/reset_dev_state.py
 ```
 
 ## Automation Pipeline
@@ -100,6 +103,27 @@ User writes memory → Auto L0 → Auto L1 → Auto L2 → Auto L3
 Archive now behaves as cold storage: old memories are exported to L3 and marked as archived, but remain searchable online.
 
 The distillation pipeline now follows `Filter -> Extract -> Reconcile -> Commit`, and stores L2 memory as profile items, facts, events, summaries, and conflict logs.
+
+Search now performs intent-aware ranking internally, so preference queries prefer profile memory, timeline queries prefer episodic/event memory, and summary queries prefer rolling summaries.
+
+Rolling summaries are now vector-indexed as part of L2, and monitor status exposes stale profile/fact/summary counts based on `last_verified_at`.
+
+## Current Progress
+
+- Public API has been reduced to `write / search / monitor`
+- Distillation now runs as `Filter -> Extract -> Reconcile -> Commit`
+- L2 has been split into profile, fact, event, summary, and conflict memory types
+- Archive now uses cold storage semantics and keeps online recall available
+- Search now uses intent-aware routing, freshness-aware ranking, and summary vector recall
+- Automated regression tests cover write, search, archive, distill, and reconciliation flows
+
+## Roadmap
+
+- Add automatic re-verification jobs for stale profile/fact/summary memory
+- Add vector indexing for profile and fact memory, not only summaries
+- Improve reconciliation with richer contradiction taxonomy and confidence merging
+- Add richer rolling summaries by time window, such as weekly and monthly summaries
+- Add benchmark and evaluation tooling for retrieval quality and distillation quality
 
 ## Documentation
 

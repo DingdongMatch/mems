@@ -98,6 +98,8 @@ class FakeVectorService:
             if filter_agent_id and payload.get("agent_id") != filter_agent_id:
                 continue
             score = 1.0 / (1.0 + abs(point["vector"][0] - query_vector[0]))
+            if payload.get("memory_type") == "l2_summary":
+                score += 0.1
             results.append({"id": point["id"], "score": score, "payload": payload})
         results.sort(key=lambda item: item["score"], reverse=True)
         return results[:top_k]

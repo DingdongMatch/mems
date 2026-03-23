@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -26,6 +27,7 @@ from mems.schemas import (
 from mems.services.embedding import EmbeddingProvider
 from mems.services.jsonl_utils import JsonlWriter
 from mems.services.llm_client import chat as llm_chat
+from mems.services.vector_service import get_vector_service
 
 
 logger = logging.getLogger(__name__)
@@ -385,7 +387,13 @@ class DistillService:
         self.session.add(new_event)
         return 1
 
-    def _commit_summary(self, agent_id: str, summary: str, source_id: int) -> int:
+    async def _commit_summary(
+        self,
+        agent_id: str,
+        summary: str,
+        source_id: int,
+        embedding_service: Optional[EmbeddingProvider],
+    ) -> int:
         if not summary.strip():
             return 0
 
@@ -396,13 +404,42 @@ class DistillService:
             )
         ).all()
         if existing and existing[-1].content == summary:
+            existing[-1].last_verified_at = datetime.now(timezone.utc)
+            existing[-1].source_l1_ids = self._append_source(
+                existing[-1].source_l1_ids, source_id
+            )
+            self.session.add(existing[-1])
             return 0
+
+        vector_id = str(uuid.uuid4())
+        if embedding_service is None:
+            from mems.services.embedding import get_embedding_service
+
+            embedding_service = await get_embedding_service()
+        vector_service = await get_vector_service()
+        summary_vector = (await embedding_service.embed([summary]))[0]
+        await vector_service.upsert(
+            collection_name=f"agent_{agent_id}",
+            points=[
+                {
+                    "id": vector_id,
+                    "vector": summary_vector,
+                    "payload": {
+                        "agent_id": agent_id,
+                        "memory_type": "l2_summary",
+                        "vector_id": vector_id,
+                        "content": summary,
+                    },
+                }
+            ],
+        )
 
         self.session.add(
             MemsL2Summary(
                 agent_id=agent_id,
                 summary_type="long_term",
                 content=summary,
+                vector_id=vector_id,
                 source_l1_ids=[source_id],
             )
         )
@@ -496,8 +533,11 @@ class DistillService:
             for event in reconciled.events:
                 local_created += self._commit_event(agent_id, event, l1.id)
 
-            local_created += self._commit_summary(
-                agent_id, reconciled.long_term_summary, l1.id
+            local_created += await self._commit_summary(
+                agent_id,
+                reconciled.long_term_summary,
+                l1.id,
+                embedding_service,
             )
 
             for conflict in reconciled.conflict_candidates:
