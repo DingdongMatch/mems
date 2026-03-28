@@ -1,13 +1,35 @@
 from pathlib import Path
 from typing import Literal
+
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ENV_FILE = PROJECT_ROOT / ".env"
+DEFAULT_SQLITE_DB = PROJECT_ROOT / "mems.db"
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     # Database
-    DATABASE_URL: str = "sqlite:///mems.db"
+    DATABASE_URL: str = f"sqlite:///{DEFAULT_SQLITE_DB}"
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def normalize_sqlite_database_url(cls, value: str) -> str:
+        if not isinstance(value, str):
+            return value
+        prefix = "sqlite:///"
+        if not value.startswith(prefix) or value.startswith("sqlite:////"):
+            return value
+        db_path = value[len(prefix) :]
+        if not db_path or Path(db_path).is_absolute():
+            return value
+        return f"sqlite:///{(PROJECT_ROOT / db_path).resolve()}"
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -16,13 +38,19 @@ class Settings(BaseSettings):
     REDIS_PASSWORD: str = ""
 
     # Qdrant
+    QDRANT_URL: str = ""
     QDRANT_HOST: str = "localhost"
     QDRANT_PORT: int = 6333
+    QDRANT_GRPC_PORT: int = 6334
     QDRANT_API_KEY: str = ""
     QDRANT_TIMEOUT: int = 30
+    QDRANT_HTTPS: bool = False
+    QDRANT_PREFER_GRPC: bool = False
 
     # Embedding
-    EMBEDDING_PROVIDER: Literal["sentence-transformers", "openai"] = "sentence-transformers"
+    EMBEDDING_PROVIDER: Literal["sentence-transformers", "openai"] = (
+        "sentence-transformers"
+    )
     SENTENCE_TRANSFORMERS_MODEL: str = "BAAI/bge-small-zh-v1.5"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
     OPENAI_EMBEDDING_API_KEY: str = ""
@@ -32,6 +60,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_TIMEOUT: int = 300
 
     # App
     APP_HOST: str = "0.0.0.0"
@@ -58,15 +87,15 @@ class Settings(BaseSettings):
     # Storage paths
     @property
     def storage_l1_path(self) -> Path:
-        return Path("storage/l1_raw")
+        return PROJECT_ROOT / "storage/l1_raw"
 
     @property
     def storage_l2_path(self) -> Path:
-        return Path("storage/l2_knowledge")
+        return PROJECT_ROOT / "storage/l2_knowledge"
 
     @property
     def storage_l3_path(self) -> Path:
-        return Path(self.ARCHIVE_STORAGE_PATH)
+        return PROJECT_ROOT / self.ARCHIVE_STORAGE_PATH
 
 
 settings = Settings()

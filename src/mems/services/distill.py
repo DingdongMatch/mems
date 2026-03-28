@@ -96,21 +96,41 @@ class DistillService:
     def _has_llm_client(self) -> bool:
         return bool(settings.OPENAI_API_KEY)
 
-    def _build_existing_context(self, agent_id: str) -> Dict[str, Any]:
+    @staticmethod
+    def _identity_payload(l1: MemsL1Episodic) -> Dict[str, Any]:
+        return {
+            "tenant_id": l1.tenant_id,
+            "user_id": l1.user_id,
+            "agent_id": l1.agent_id,
+            "scope": l1.scope,
+        }
+
+    def _build_existing_context(self, l1: MemsL1Episodic) -> Dict[str, Any]:
         profile_items = self.session.exec(
             select(MemsL2ProfileItem).where(
-                MemsL2ProfileItem.agent_id == agent_id,
+                MemsL2ProfileItem.tenant_id == l1.tenant_id,
+                MemsL2ProfileItem.user_id == l1.user_id,
+                MemsL2ProfileItem.agent_id == l1.agent_id,
+                MemsL2ProfileItem.scope == l1.scope,
                 MemsL2ProfileItem.status == "active",
             )
         ).all()
         fact_items = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.agent_id == agent_id,
+                MemsL2Fact.tenant_id == l1.tenant_id,
+                MemsL2Fact.user_id == l1.user_id,
+                MemsL2Fact.agent_id == l1.agent_id,
+                MemsL2Fact.scope == l1.scope,
                 MemsL2Fact.status == "active",
             )
         ).all()
         summaries = self.session.exec(
-            select(MemsL2Summary).where(MemsL2Summary.agent_id == agent_id)
+            select(MemsL2Summary).where(
+                MemsL2Summary.tenant_id == l1.tenant_id,
+                MemsL2Summary.user_id == l1.user_id,
+                MemsL2Summary.agent_id == l1.agent_id,
+                MemsL2Summary.scope == l1.scope,
+            )
         ).all()
 
         return {
@@ -222,11 +242,14 @@ class DistillService:
         return merged
 
     def _reconcile_profile_item(
-        self, agent_id: str, update: DistillProfileUpdate, source_id: int
+        self, l1: MemsL1Episodic, update: DistillProfileUpdate, source_id: int
     ) -> tuple[int, int]:
         existing = self.session.exec(
             select(MemsL2ProfileItem).where(
-                MemsL2ProfileItem.agent_id == agent_id,
+                MemsL2ProfileItem.tenant_id == l1.tenant_id,
+                MemsL2ProfileItem.user_id == l1.user_id,
+                MemsL2ProfileItem.agent_id == l1.agent_id,
+                MemsL2ProfileItem.scope == l1.scope,
                 MemsL2ProfileItem.category == update.category,
                 MemsL2ProfileItem.key == update.key,
                 MemsL2ProfileItem.status == "active",
@@ -249,7 +272,7 @@ class DistillService:
             self.session.add(existing)
 
             conflict = MemsL2ConflictLog(
-                agent_id=agent_id,
+                **self._identity_payload(l1),
                 memory_type="profile",
                 old_value=f"{existing.category}:{existing.key}={existing.value}",
                 new_value=f"{update.category}:{update.key}={update.value}",
@@ -260,7 +283,7 @@ class DistillService:
             self.session.add(conflict)
 
             new_item = MemsL2ProfileItem(
-                agent_id=agent_id,
+                **self._identity_payload(l1),
                 category=update.category,
                 key=update.key,
                 value=update.value,
@@ -273,7 +296,7 @@ class DistillService:
             return 1, 1
 
         new_item = MemsL2ProfileItem(
-            agent_id=agent_id,
+            **self._identity_payload(l1),
             category=update.category,
             key=update.key,
             value=update.value,
@@ -284,11 +307,14 @@ class DistillService:
         return 1, 0
 
     def _reconcile_fact_item(
-        self, agent_id: str, fact: DistillFactItem, source_id: int
+        self, l1: MemsL1Episodic, fact: DistillFactItem, source_id: int
     ) -> tuple[int, int]:
         existing_exact = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.agent_id == agent_id,
+                MemsL2Fact.tenant_id == l1.tenant_id,
+                MemsL2Fact.user_id == l1.user_id,
+                MemsL2Fact.agent_id == l1.agent_id,
+                MemsL2Fact.scope == l1.scope,
                 MemsL2Fact.subject == fact.subject,
                 MemsL2Fact.predicate == fact.relation,
                 MemsL2Fact.object == fact.object,
@@ -308,7 +334,10 @@ class DistillService:
 
         conflicting = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.agent_id == agent_id,
+                MemsL2Fact.tenant_id == l1.tenant_id,
+                MemsL2Fact.user_id == l1.user_id,
+                MemsL2Fact.agent_id == l1.agent_id,
+                MemsL2Fact.scope == l1.scope,
                 MemsL2Fact.subject == fact.subject,
                 MemsL2Fact.predicate == fact.relation,
                 MemsL2Fact.status == "active",
@@ -317,7 +346,7 @@ class DistillService:
 
         if fact.relation in MULTI_VALUE_PREDICATES:
             new_item = MemsL2Fact(
-                agent_id=agent_id,
+                **self._identity_payload(l1),
                 subject=fact.subject,
                 predicate=fact.relation,
                 object=fact.object,
@@ -336,7 +365,7 @@ class DistillService:
             self.session.add(existing)
 
             conflict = MemsL2ConflictLog(
-                agent_id=agent_id,
+                **self._identity_payload(l1),
                 memory_type="fact",
                 old_value=f"{existing.subject} {existing.predicate} {existing.object}",
                 new_value=f"{fact.subject} {fact.relation} {fact.object}",
@@ -347,7 +376,7 @@ class DistillService:
             self.session.add(conflict)
 
             new_item = MemsL2Fact(
-                agent_id=agent_id,
+                **self._identity_payload(l1),
                 subject=fact.subject,
                 predicate=fact.relation,
                 object=fact.object,
@@ -361,7 +390,7 @@ class DistillService:
             return 1, 1
 
         new_item = MemsL2Fact(
-            agent_id=agent_id,
+            **self._identity_payload(l1),
             subject=fact.subject,
             predicate=fact.relation,
             object=fact.object,
@@ -373,10 +402,10 @@ class DistillService:
         return 1, 0
 
     def _commit_event(
-        self, agent_id: str, event: DistillEventItem, source_id: int
+        self, l1: MemsL1Episodic, event: DistillEventItem, source_id: int
     ) -> int:
         new_event = MemsL2Event(
-            agent_id=agent_id,
+            **self._identity_payload(l1),
             subject=event.subject,
             action=event.action,
             object=event.object,
@@ -389,7 +418,7 @@ class DistillService:
 
     async def _commit_summary(
         self,
-        agent_id: str,
+        l1: MemsL1Episodic,
         summary: str,
         source_id: int,
         embedding_service: Optional[EmbeddingProvider],
@@ -399,7 +428,10 @@ class DistillService:
 
         existing = self.session.exec(
             select(MemsL2Summary).where(
-                MemsL2Summary.agent_id == agent_id,
+                MemsL2Summary.tenant_id == l1.tenant_id,
+                MemsL2Summary.user_id == l1.user_id,
+                MemsL2Summary.agent_id == l1.agent_id,
+                MemsL2Summary.scope == l1.scope,
                 MemsL2Summary.summary_type == "long_term",
             )
         ).all()
@@ -412,37 +444,52 @@ class DistillService:
             return 0
 
         vector_id = str(uuid.uuid4())
-        if embedding_service is None:
-            from mems.services.embedding import get_embedding_service
-
-            embedding_service = await get_embedding_service()
-        vector_service = await get_vector_service()
-        summary_vector = (await embedding_service.embed([summary]))[0]
-        await vector_service.upsert(
-            collection_name=f"agent_{agent_id}",
-            points=[
-                {
-                    "id": vector_id,
-                    "vector": summary_vector,
-                    "payload": {
-                        "agent_id": agent_id,
-                        "memory_type": "l2_summary",
-                        "vector_id": vector_id,
-                        "content": summary,
-                    },
-                }
-            ],
+        summary_record = MemsL2Summary(
+            **self._identity_payload(l1),
+            summary_type="long_term",
+            content=summary,
+            vector_id=vector_id,
+            vector_status="pending",
+            source_l1_ids=[source_id],
         )
+        self.session.add(summary_record)
+        self.session.commit()
+        self.session.refresh(summary_record)
 
-        self.session.add(
-            MemsL2Summary(
-                agent_id=agent_id,
-                summary_type="long_term",
-                content=summary,
-                vector_id=vector_id,
-                source_l1_ids=[source_id],
+        try:
+            if embedding_service is None:
+                from mems.services.embedding import get_embedding_service
+
+                embedding_service = await get_embedding_service()
+            vector_service = await get_vector_service()
+            summary_vector = (await embedding_service.embed([summary]))[0]
+            await vector_service.upsert(
+                collection_name=f"agent_{l1.agent_id}",
+                points=[
+                    {
+                        "id": vector_id,
+                        "vector": summary_vector,
+                        "payload": {
+                            "tenant_id": l1.tenant_id,
+                            "user_id": l1.user_id,
+                            "agent_id": l1.agent_id,
+                            "scope": l1.scope,
+                            "memory_type": "l2_summary",
+                            "vector_id": vector_id,
+                            "content": summary,
+                        },
+                    }
+                ],
             )
-        )
+            summary_record.vector_status = "ready"
+            summary_record.last_sync_error = None
+            summary_record.last_sync_at = datetime.now(timezone.utc)
+        except Exception as exc:
+            logger.error("Failed to sync L2 summary vector replica: %s", exc)
+            summary_record.vector_status = "failed"
+            summary_record.last_sync_error = f"vector: {exc}"
+            summary_record.last_sync_at = datetime.now(timezone.utc)
+        self.session.add(summary_record)
         return 1
 
     async def distill(
@@ -494,6 +541,10 @@ class DistillService:
                 self.session.add(l1)
                 audit_records.append(
                     {
+                        "tenant_id": l1.tenant_id,
+                        "user_id": l1.user_id,
+                        "agent_id": l1.agent_id,
+                        "scope": l1.scope,
                         "l1_id": l1.id,
                         "discarded": [{"text": l1.content, "reason": filter_reason}],
                         "profile_updates": [],
@@ -506,7 +557,7 @@ class DistillService:
                 distilled_count += 1
                 continue
 
-            existing_context = self._build_existing_context(agent_id)
+            existing_context = self._build_existing_context(l1)
             try:
                 extracted = await self._extract_candidates(
                     agent_id, l1, existing_context
@@ -521,20 +572,20 @@ class DistillService:
             local_created = 0
             local_updated = 0
             for update in reconciled.profile_updates:
-                c, u = self._reconcile_profile_item(agent_id, update, l1.id)
+                c, u = self._reconcile_profile_item(l1, update, l1.id)
                 local_created += c
                 local_updated += u
 
             for fact in reconciled.facts:
-                c, u = self._reconcile_fact_item(agent_id, fact, l1.id)
+                c, u = self._reconcile_fact_item(l1, fact, l1.id)
                 local_created += c
                 local_updated += u
 
             for event in reconciled.events:
-                local_created += self._commit_event(agent_id, event, l1.id)
+                local_created += self._commit_event(l1, event, l1.id)
 
             local_created += await self._commit_summary(
-                agent_id,
+                l1,
                 reconciled.long_term_summary,
                 l1.id,
                 embedding_service,
@@ -543,7 +594,7 @@ class DistillService:
             for conflict in reconciled.conflict_candidates:
                 self.session.add(
                     MemsL2ConflictLog(
-                        agent_id=agent_id,
+                        **self._identity_payload(l1),
                         memory_type=conflict.memory_type,
                         old_value=conflict.old,
                         new_value=conflict.new,
@@ -560,7 +611,16 @@ class DistillService:
             created_count += local_created
             updated_count += local_updated
             distilled_count += 1
-            audit_records.append({"l1_id": l1.id, **reconciled.model_dump()})
+            audit_records.append(
+                {
+                    "tenant_id": l1.tenant_id,
+                    "user_id": l1.user_id,
+                    "agent_id": l1.agent_id,
+                    "scope": l1.scope,
+                    "l1_id": l1.id,
+                    **reconciled.model_dump(),
+                }
+            )
 
         self.session.commit()
 

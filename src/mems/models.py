@@ -10,13 +10,21 @@ class MemsL1Episodic(SQLModel, table=True):
     __tablename__ = "mems_l1_episodic"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
     session_id: str = Field(index=True, default="")
+    scope: Optional[str] = Field(default=None, index=True)
     content: str
     vector_id: str = Field(unique=True, index=True)
     importance_score: float = 0.0
     is_distilled: bool = Field(default=False, index=True)
     is_archived: bool = Field(default=False, index=True)
+    vector_status: str = Field(default="pending", index=True)
+    jsonl_status: str = Field(default="pending", index=True)
+    archive_status: str = Field(default="pending", index=True)
+    last_sync_error: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
     metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -27,7 +35,10 @@ class MemsL2Semantic(SQLModel, table=True):
     __tablename__ = "mems_l2_semantic"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     subject: str = Field(index=True)
     predicate: str
     object: str
@@ -44,7 +55,10 @@ class MemsL2ProfileItem(SQLModel, table=True):
     __tablename__ = "mems_l2_profile_item"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     category: str = Field(index=True)
     key: str = Field(index=True)
     value: str
@@ -65,7 +79,10 @@ class MemsL2Fact(SQLModel, table=True):
     __tablename__ = "mems_l2_fact"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     subject: str = Field(index=True)
     predicate: str = Field(index=True)
     object: str
@@ -87,7 +104,10 @@ class MemsL2Event(SQLModel, table=True):
     __tablename__ = "mems_l2_event"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     subject: str = Field(index=True)
     action: str = Field(index=True)
     object: str
@@ -103,10 +123,16 @@ class MemsL2Summary(SQLModel, table=True):
     __tablename__ = "mems_l2_summary"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     summary_type: str = Field(default="long_term", index=True)
     content: str
     vector_id: Optional[str] = Field(default=None, unique=True, index=True)
+    vector_status: str = Field(default="pending", index=True)
+    last_sync_error: Optional[str] = None
+    last_sync_at: Optional[datetime] = None
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_verified_at: datetime = Field(
@@ -120,7 +146,10 @@ class MemsL2ConflictLog(SQLModel, table=True):
     __tablename__ = "mems_l2_conflict_log"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     memory_type: str = Field(index=True)
     old_value: str
     new_value: str
@@ -136,7 +165,10 @@ class MemsL3Archive(SQLModel, table=True):
     __tablename__ = "mems_l3_archive"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    tenant_id: Optional[str] = Field(default=None, index=True)
+    user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
+    scope: Optional[str] = Field(default=None, index=True)
     time_period: str
     summary_text: str
     file_path: str

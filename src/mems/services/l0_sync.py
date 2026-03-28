@@ -1,5 +1,6 @@
 import uuid
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from sqlmodel import Session
 
@@ -12,6 +13,26 @@ from mems.services.jsonl_utils import JsonlWriter
 
 
 logger = logging.getLogger(__name__)
+
+
+def _mark_l1_replica_status(
+    session: Session,
+    record: MemsL1Episodic,
+    *,
+    vector_status: Optional[str] = None,
+    jsonl_status: Optional[str] = None,
+    error: Optional[str] = None,
+) -> None:
+    if vector_status is not None:
+        record.vector_status = vector_status
+    if jsonl_status is not None:
+        record.jsonl_status = jsonl_status
+    if error is not None:
+        record.last_sync_error = error
+    record.last_sync_at = datetime.now(timezone.utc)
+    session.add(record)
+    session.commit()
+    session.refresh(record)
 
 
 async def sync_l0_to_l1(
@@ -52,69 +73,92 @@ async def sync_l0_to_l1(
 
         vector_id = str(uuid.uuid4())
 
-        # 获取向量服务
-        vector_service = await get_vector_service()
-        embedding_service = await get_embedding_service()
-
-        # 生成向量
-        embeddings = await embedding_service.embed([content])
-        vector = embeddings[0]
-
         # 合并元数据
-        full_metadata = metadata or {}
+        full_metadata = dict(metadata or {})
+        full_metadata["tenant_id"] = l0_data.tenant_id
+        full_metadata["user_id"] = l0_data.user_id
+        full_metadata["scope"] = l0_data.scope
         full_metadata["active_plan"] = l0_data.active_plan
         full_metadata["temp_variables"] = l0_data.temp_variables
-        full_metadata["source"] = "l0_sync"
+        full_metadata.setdefault("source", "l0_sync")
+        full_metadata["sync_source"] = "l0_sync"
 
         # 写入 L1
         l1_record = MemsL1Episodic(
+            tenant_id=l0_data.tenant_id,
+            user_id=l0_data.user_id,
             agent_id=l0_data.agent_id,
             session_id=l0_data.session_id,
+            scope=l0_data.scope,
             content=content,
             vector_id=vector_id,
             importance_score=importance_score,
             is_distilled=False,
+            vector_status="pending",
+            jsonl_status="pending",
+            archive_status="pending",
             metadata_json=full_metadata,
         )
         session.add(l1_record)
-        session.flush()
-
-        await vector_service.upsert(
-            collection_name=f"agent_{l0_data.agent_id}",
-            points=[
-                {
-                    "id": vector_id,
-                    "vector": vector,
-                    "payload": {
-                        "l1_id": l1_record.id,
-                        "vector_id": vector_id,
-                        "agent_id": l0_data.agent_id,
-                        "session_id": l0_data.session_id,
-                        "content": content,
-                    },
-                }
-            ],
-        )
-
         session.commit()
         session.refresh(l1_record)
 
-        # 同步写 JSONL
-        l1_writer = JsonlWriter(settings.storage_l1_path, "l1")
-        l1_writer.write(
-            l0_data.agent_id,
-            {
-                "id": l1_record.id,
-                "agent_id": l0_data.agent_id,
-                "session_id": l0_data.session_id,
-                "content": content,
-                "vector_id": vector_id,
-                "importance_score": importance_score,
-                "metadata": full_metadata,
-                "created_at": l1_record.created_at.isoformat(),
-                "sync_from": "l0",
-            },
-        )
+        try:
+            vector_service = await get_vector_service()
+            embedding_service = await get_embedding_service()
+            embeddings = await embedding_service.embed([content])
+            vector = embeddings[0]
+            await vector_service.upsert(
+                collection_name=f"agent_{l0_data.agent_id}",
+                points=[
+                    {
+                        "id": vector_id,
+                        "vector": vector,
+                        "payload": {
+                            "l1_id": l1_record.id,
+                            "vector_id": vector_id,
+                            "tenant_id": l0_data.tenant_id,
+                            "user_id": l0_data.user_id,
+                            "agent_id": l0_data.agent_id,
+                            "session_id": l0_data.session_id,
+                            "scope": l0_data.scope,
+                            "content": content,
+                        },
+                    }
+                ],
+            )
+            _mark_l1_replica_status(session, l1_record, vector_status="ready")
+        except Exception as exc:
+            logger.error("Failed to sync L1 vector replica: %s", exc)
+            _mark_l1_replica_status(
+                session, l1_record, vector_status="failed", error=f"vector: {exc}"
+            )
+
+        try:
+            l1_writer = JsonlWriter(settings.storage_l1_path, "l1")
+            l1_writer.write(
+                l0_data.agent_id,
+                {
+                    "id": l1_record.id,
+                    "tenant_id": l0_data.tenant_id,
+                    "user_id": l0_data.user_id,
+                    "agent_id": l0_data.agent_id,
+                    "session_id": l0_data.session_id,
+                    "scope": l0_data.scope,
+                    "content": content,
+                    "vector_id": vector_id,
+                    "importance_score": importance_score,
+                    "metadata": full_metadata,
+                    "created_at": l1_record.created_at.isoformat(),
+                    "sync_from": "l0",
+                },
+            )
+            _mark_l1_replica_status(session, l1_record, jsonl_status="ready")
+        except Exception as exc:
+            logger.error("Failed to sync L1 JSONL replica: %s", exc)
+            _mark_l1_replica_status(
+                session, l1_record, jsonl_status="failed", error=f"jsonl: {exc}"
+            )
 
         logger.info(
             f"L0 synced to L1: agent={l0_data.agent_id}, session={l0_data.session_id}, l1_id={l1_record.id}"

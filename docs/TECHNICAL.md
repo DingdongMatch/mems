@@ -1,555 +1,70 @@
-# Mems 分层记忆系统 - 技术文档
+# 技术补充说明
 
-## 1. 项目概述
+项目的主叙事、公开 API 接入流、分层记忆解释和快速开始，现在统一放在 `README_zh.md` 中。
 
-**Mems** 是一个支持多 Agent 隔离、长周期（100年级）、低成本且供应商无关的分层记忆系统。它通过"冷热分离"和"异步蒸馏"技术，将碎片化的对话转变为持久的结构化知识。
+这个文件不再承担“大而全主文档”的角色，而是保留给更偏内部实现的补充说明。
 
-### 核心特性
+## 如果你需要更深入了解，可以重点看这些
 
-- **全自动化流水线**: L0→L1→L2→L3 完全自动化
-- **四层记忆架构**: L0(Redis) → L1(SQL+Vector) → L2(SQL+JSONL) → L3(JSONL归档)
-- **多租户隔离**: 每个 Agent 独立存储，数据物理隔离
-- **向量检索**: 基于 Qdrant 的语义搜索
-- **记忆蒸馏**: L1→L2 自动执行过滤、提取、对账、提交
-- **百年归档**: 纯文本 JSONL 格式，跨时代可读
+- embedding 模型与向量维度假设
+- 调度器与自动化触发机制
+- L1 / L2 / L3 的 SQLModel 结构
+- 蒸馏、归档、监控等内部实现说明
 
----
+## 当前保留的技术补充点
 
-## 2. 技术栈
+### Embedding
 
-| 组件 | 技术选型 | 说明 |
-|------|----------|------|
-| 语言 | Python 3.12+ | 现代异步支持 |
-| Web 框架 | FastAPI | 高性能、易用 |
-| ORM | SQLModel | Pydantic + SQLAlchemy |
-| 向量数据库 | Qdrant | 高效向量检索 |
-| 缓存 | Redis | L0 工作记忆 |
-| 调度器 | APScheduler | 定时任务 |
-| 数据库 | SQLite (开发) / PostgreSQL (生产) | 关系型存储 |
-| 包管理 | uv | 现代 Python 包管理 |
+- 默认本地模型：`BAAI/bge-small-zh-v1.5`
+- 可选使用 OpenAI embedding
+- embedding 主要用于：
+  - L1 情景记忆语义召回
+  - L2 摘要向量召回
 
----
+### 蒸馏流水线
 
-## 3. Embedding 模型
+当前长期记忆蒸馏流程为：
 
-### 3.1 作用说明
+1. 过滤低信号或短期片段
+2. 提取画像 / 事实 / 事件 / 摘要候选
+3. 与已有 L2 做对账
+4. 提交画像、事实、事件、摘要、冲突日志
 
-Embedding 模型是 **L1 层（情景记忆）的核心组件**，用于实现语义搜索功能。
+### 存储分工
 
-```
-用户查询 → Embedding 模型 → 512维向量 → Qdrant 向量搜索 → 相关记忆
-```
+- Redis：短期 session context
+- SQL：在线状态真相源、结构化元数据、证据链、对账与副本状态
+- Qdrant：派生向量副本，用于语义检索
+- JSONL：派生归档副本，用于长期保存与可移植性
 
-#### 主要用途
+### 副本一致性
 
-1. **搜索时** (search 接口)
-   - 将用户查询转为向量 → 在 Qdrant 中做相似度搜索 → 返回最相关的 L1 记忆
+- 在线写入优先提交 SQL 主记录
+- 向量和 JSONL 同步以副本状态跟踪，不再作为主提交边界
+- 默认搜索只面向活跃 L1；已归档 L1 不参与默认在线检索
+- L3 仍是长周期归档层，后续会通过深度归档检索重新参与远期召回
 
-2. **写入时** (l0_sync)
-   - L0 数据同步到 L1 时，生成向量并存入 Qdrant
+### 调度默认值
 
-#### 数据流示意
+- 蒸馏阈值：`100`
+- 蒸馏时间：`02:00`
+- 归档时间：`03:00`
+- 归档天数：`30`
 
-```
-搜索请求: "用户喜欢什么"
-     ↓
-Embedding 模型 (bge-small-zh-v1.5) → [0.12, -0.34, 0.56, ...]
-     ↓
-Qdrant 向量搜索 (余弦相似度) → 找到最相似的 L1 记录
-     ↓
-返回结果 (source: l1_episodic, score: 0.95)
-```
+### 关键内部模块
 
-### 3.2 模型配置
+- `src/mems/services/redis_service.py`
+- `src/mems/services/l0_sync.py`
+- `src/mems/services/vector_service.py`
+- `src/mems/services/distill.py`
+- `src/mems/services/archive.py`
+- `src/mems/routers/memories.py`
+- `src/mems/routers/simulator.py`
+- `src/mems/routers/monitor.py`
 
-| 配置项 | 说明 | 默认值 |
-|--------|------|--------|
-| `EMBEDDING_PROVIDER` | 提供商 (sentence-transformers/openai) | sentence-transformers |
-| `SENTENCE_TRANSFORMERS_MODEL` | 本地模型名称 | BAAI/bge-small-zh-v1.5 |
-| `OPENAI_EMBEDDING_MODEL` | OpenAI 模型 | text-embedding-3-small |
+## 推荐阅读顺序
 
-#### 本地模型 (默认)
-
-- **模型**: `BAAI/bge-small-zh-v1.5`
-- **向量维度**: 512
-- **特点**: 中文优化，轻量级，无需 API 调用
-
-#### OpenAI (可选)
-
-如需使用 OpenAI embedding，在 `.env` 中配置:
-
-```bash
-EMBEDDING_PROVIDER=openai
-OPENAI_EMBEDDING_API_KEY=your-key
-```
-
----
-
-## 4. 分层定义
-
-当前代码仓库已经提供了一个可运行的参考实现。若从系统设计和后续生产演进角度看，这四层可以定义为：
-
-| 层级 | 逻辑定义 |
-|------|----------|
-| L0: 瞬时层 | 正在进行的对话、当前任务状态、进行中的思考链 (CoT) |
-| L1: 情景层 | 原始对话记录、最近发生的特定事件细节 |
-| L2: 语义层 | 提炼后的用户画像、事实知识、行为偏好与滚动摘要 |
-| L3: 归档层 | 历史全量日志、年度总结、不再活跃的旧知识 |
-
----
-
-## 5. 架构设计
-
-### 5.1 四层记忆模型
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     L0: 工作记忆 (Redis)                        │
-│                 自动双写 L1，用户无感知                          │
-│  - 当前会话 Context                                            │
-│  - 活跃任务状态                                                │
-│  - 临时变量                                                    │
-│  - TTL 自动过期                                                │
-└─────────────────────────────────────────────────────────────────┘
-                    │ (实时自动双写)
-                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   L1: 情景记忆 (SQLite + Qdrant + JSONL)        │
-│  - 原始对话 100% 保留                                          │
-│  - 向量嵌入支持语义检索                                        │
-│  - 文本优先：同步写 JSONL                                      │
-│  - 等待蒸馏/归档                                               │
-└─────────────────────────────────────────────────────────────────┘
-                    │                                    │
-                    │ (阈值/定时触发)                      │ (定时触发)
-                    ▼                                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   L2: 语义记忆 (SQLite + JSONL)                 │
-│  - 用户画像 / 事实关系 / 事件 / 摘要                            │
-│  - 冲突检测 + 版本管理 + 证据溯源                               │
-│  - 溯源 L1 记录                                                │
-│  - 触发条件：>100条未蒸馏 或 每天 2:00 AM                       │
-└─────────────────────────────────────────────────────────────────┘
-                    │
-                    │ (定时触发)
-                    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   L3: 归档记忆 (JSONL 文件)                     │
-│  - 超过 30 天数据                                              │
-│  - 纯文本格式，百年可读                                        │
-│  - 自包含 reader.py (纯标准库)                                 │
-│  - 触发条件：每天 3:00 AM                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### 5.2 自动化数据流
-
-```
-用户 ──→ /memories/write ──→ L0 (Redis)
-                               │
-                               │ (自动持久化)
-                               ▼
-                          L1 (SQL + Qdrant + JSONL)
-                        │
-    ┌───────────────────┴───────────────────┐
-    │                                       │
-    │ (阈值: >100条未蒸馏)                  │ (定时: 每天 3:00)
-    ▼                                       ▼
-  L2 (画像/事实/摘要)                    L3 (归档)
-    │                                       │
-    │                                       │
-    └───────────────────┬───────────────────┘
-                        │
-                        ▼ (可选检索)
-                    用户查询
-```
-
----
-
-## 6. 自动化流水线详解
-
-### 6.1 L0 → L1 自动双写
-
-当用户调用 `/memories/write` 时，系统自动完成：
-
-1. 写入 Redis (L0) - 带 TTL
-2. 自动同步到 L1 - SQLite + Qdrant + JSONL
-
-**配置项**:
-- `L0_AUTO_SYNC_L1=true` - 启用自动双写
-- `L0_DEFAULT_TTL_SECONDS=1800` - L0 默认 TTL
-
-### 6.2 L1 → L2 自动蒸馏
-
-**触发条件**（满足任一即触发）:
-- **阈值触发**: 未蒸馏 L1 记录 > 100 条（可配置）
-- **定时触发**: 每天 2:00 AM（可配置）
-
-**处理逻辑**:
-1. 查询 `is_distilled=False` 的 L1 记录
-2. Filter: 过滤寒暄、低信号、短期噪声
-3. Extract: 提取画像、事实、事件、摘要候选
-4. Reconcile: 与现有 L2 对账，区分重复、增强、更新、冲突
-5. Commit: 写入 L2 profile/fact/event/summary/conflict，并更新 L1.is_distilled=True
-
-### 6.3 L1 → L3 自动归档
-
-**触发条件**:
-- **定时触发**: 每天 3:00 AM（可配置）
-
-**处理逻辑**:
-1. 查找超过 30 天（可配置）的 L1 记录
-2. 导出为 JSONL 文件
-3. 创建 L3 索引记录
-4. 将原 L1 记录标记为已归档，但继续保留在线查询能力
-
-### 6.4 调度器配置
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `SCHEDULER_ENABLED` | true | 启用调度器 |
-| `DISTILL_CRON_HOUR` | 2 | 蒸馏定时小时 |
-| `DISTILL_CRON_MINUTE` | 0 | 蒸馏定时分钟 |
-| `DISTILL_THRESHOLD` | 100 | 蒸馏阈值 |
-| `DISTILL_BATCH_SIZE` | 50 | 蒸馏批量大小 |
-| `ARCHIVE_CRON_HOUR` | 3 | 归档定时小时 |
-| `ARCHIVE_CRON_MINUTE` | 0 | 归档定时分钟 |
-| `ARCHIVE_DAYS` | 30 | 归档天数 |
-
----
-
-## 7. 数据库 Schema
-
-### 7.1 L1: 情景记录表
-
-```python
-class MemsL1Episodic(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    agent_id: str = Field(index=True)           # Agent 隔离
-    session_id: str = Field(index=True)         # 会话 ID
-    content: str                                 # 原始对话
-    vector_id: str = Field(unique=True)         # 向量 ID
-    importance_score: float = 0.0               # 重要性评分
-    is_distilled: bool = Field(default=False)   # 是否已蒸馏
-    metadata_json: Dict = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-```
-
-### 7.2 L2: 语义知识层
-
-```python
-class MemsL2ProfileItem(SQLModel, table=True):
-    category: str
-    key: str
-    value: str
-    status: str
-    version: int
-
-class MemsL2Fact(SQLModel, table=True):
-    subject: str
-    predicate: str
-    object: str
-    fact_type: str
-    status: str
-    version: int
-
-class MemsL2Event(SQLModel, table=True):
-    subject: str
-    action: str
-    object: str
-    time_hint: Optional[str]
-
-class MemsL2Summary(SQLModel, table=True):
-    summary_type: str
-    content: str
-
-class MemsL2ConflictLog(SQLModel, table=True):
-    memory_type: str
-    old_value: str
-    new_value: str
-    resolution: str
-```
-
-### 7.3 L3: 归档索引表
-
-```python
-class MemsL3Archive(SQLModel, table=True):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    agent_id: str = Field(index=True)
-    time_period: str                             # 时间段
-    summary_text: str                            # 摘要
-    file_path: str                               # 文件路径
-    record_count: int = 0                        # 记录数
-    archived_at: datetime = Field(default_factory=datetime.utcnow)
-```
-
----
-
-## 8. API 接口
-
-### 8.1 记忆写入
-
-**POST** `/memories/write` - 写入记忆，由系统自动持久化到 L0/L1
-```json
-{
-  "agent_id": "agent_001",
-  "session_id": "sess_abc",
-  "messages": [
-    {"role": "user", "content": "你好"},
-    {"role": "assistant", "content": "你好！"}
-  ],
-  "active_plan": "学习",
-  "temp_variables": {"key": "value"},
-  "ttl_seconds": 1800
-}
-```
-
-### 8.2 记忆查询
-
-**POST** `/memories/search`
-```json
-{
-  "agent_id": "agent_001",
-  "query": "编程语言学习",
-  "top_k": 5
-}
-```
-
-检索策略完全由系统内部决定，不对外暴露 L1/L2 开关。
-
-系统内部会执行 query intent routing 和 freshness-aware ranking，在情景、画像、事实、事件、摘要之间自动选择更合适的召回与排序。
-
-滚动摘要也会写入共享的 Agent 向量集合，`/monitor/status` 会基于 `last_verified_at` 暴露陈旧画像/事实/摘要数量。
-
-### 开发环境重置
-
-```bash
-uv run python scripts/reset_dev_state.py
-```
-
-### 8.3 监看检测
-
-**GET** `/monitor/status` - 查看依赖健康、调度状态和流水线积压
-
-### 8.4 轻量健康探针
-
-**GET** `/health` - 轻量级进程存活接口
-
----
-
-## 9. 配置说明
-
-### 环境变量 (.env)
-
-```bash
-# ===================
-# 数据库
-# ===================
-DATABASE_URL=sqlite:///mems.db
-
-# ===================
-# Redis
-# ===================
-REDIS_HOST=localhost
-REDIS_PORT=6379
-
-# ===================
-# Qdrant
-# ===================
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-
-# ===================
-# Embedding Model (本地 sentence-transformers)
-# ===================
-EMBEDDING_PROVIDER=sentence-transformers
-SENTENCE_TRANSFORMERS_MODEL=BAAI/bge-small-zh-v1.5
-
-# ===================
-# LLM 蒸馏 (OpenAI/DashScope)
-# ===================
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-OPENAI_MODEL=qwen3.5-plus
-
-# ===================
-# 调度器 (自动化流水线)
-# ===================
-SCHEDULER_ENABLED=true
-DISTILL_CRON_HOUR=2
-DISTILL_CRON_MINUTE=0
-DISTILL_THRESHOLD=100
-DISTILL_BATCH_SIZE=50
-ARCHIVE_CRON_HOUR=3
-ARCHIVE_CRON_MINUTE=0
-ARCHIVE_DAYS=30
-
-# ===================
-# L0 自动同步
-# ===================
-L0_AUTO_SYNC_L1=true
-L0_DEFAULT_TTL_SECONDS=1800
-```
-
----
-
-## 10. 快速开始
-
-### 10.1 启动服务
-
-```bash
-# 1. 安装依赖
-uv sync
-
-# 2. 启动 Docker 服务 (Redis + Qdrant)
-docker compose up -d
-
-# 3. 初始化数据库
-python scripts/init_db.py
-
-# 4. 启动 FastAPI
-uv run python -m mems.main
-```
-
-### 10.2 重置开发环境
-
-```bash
-uv run python scripts/reset_dev_state.py
-```
-
-### 10.3 推荐使用流程
-
-```bash
-# 1. 写入记忆
-curl -X POST http://localhost:8000/memories/write \
-  -H "Content-Type: application/json" \
-  -d '{
-    "agent_id": "my_agent",
-    "session_id": "sess_001",
-    "messages": [{"role": "user", "content": "我喜欢 Python"}]
-  }'
-
-# 2. 搜索（内部自动混合 L1 + L2）
-curl -X POST http://localhost:8000/memories/search \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id": "my_agent", "query": "Python"}'
-
-# 3. 查看服务健康和积压
-curl http://localhost:8000/monitor/status
-```
-
----
-
-## 11. 扩展指南
-
-### 11.1 切换 Embedding 模型
-
-```bash
-EMBEDDING_PROVIDER=openai
-OPENAI_EMBEDDING_API_KEY=sk-xxx
-OPENAI_EMBEDDING_MODEL=text-embedding-3-small
-```
-
-### 11.2 切换 LLM 蒸馏
-
-```bash
-LLM_PROVIDER=openai
-OPENAI_API_KEY=sk-xxx
-OPENAI_MODEL=gpt-4o-mini
-```
-
-### 11.3 切换数据库
-
-```bash
-DATABASE_URL=postgresql://user:pass@localhost/mems
-```
-
----
-
-## 12. 目录结构
-
-```
-mems/
-├── pyproject.toml              # 项目配置
-├── docker-compose.yml          # Docker 服务
-├── .env                        # 环境变量
-├── README.md                   # 项目说明
-├── src/mems/
-│   ├── __init__.py
-│   ├── main.py                 # FastAPI 入口 + 调度器
-│   ├── config.py               # 配置管理
-│   ├── models.py               # SQLModel 定义
-│   ├── database.py             # 数据库连接
-│   ├── schemas.py              # Pydantic 模型
-│   ├── services/
-│   │   ├── scheduler.py        # 调度服务 (APScheduler)
-│   │   ├── redis_service.py    # L0 服务
-│   │   ├── l0_sync.py          # L0→L1 同步
-│   │   ├── vector_service.py   # Qdrant 服务
-│   │   ├── embedding.py        # 向量化服务
-│   │   ├── distill.py          # 蒸馏服务 + 阈值检测
-│   │   ├── archive.py          # 归档服务 + 自动触发
-│   │   └── jsonl_utils.py      # JSONL 工具
-│   └── routers/
-│       ├── memories.py         # /memories/write + /memories/search
-│       └── monitor.py          # /monitor/status
-├── scripts/
-│   ├── init_db.py              # 数据库初始化
-│   └── reader.py               # L3 读取器 (纯标准库)
-└── storage/
-    ├── l1_raw/                 # L1 JSONL
-    ├── l2_knowledge/           # L2 JSONL
-    └── l3_archive/             # L3 归档
-```
-
----
-
-## 13. 注意事项
-
-1. **自动化优先**: 推荐使用 `/memories/write`，系统自动完成后续持久化流水线
-2. **文本优先**: 所有数据必须同时写入 JSONL，防止数据库损坏导致数据丢失
-3. **Agent 隔离**: 每个 Agent 使用独立 Collection，实现物理隔离
-4. **版本管理**: L2 知识冲突时，旧版本标记为非活跃，新版本+1
-5. **LLM 配置**: 蒸馏需要 OpenAI/DashScope API，否则只标记不提取
-6. **时效性**: `last_verified_at` 会参与排序与陈旧记忆监控
-
----
-
-## 14. 当前进度与规划
-
-### 当前进度
-
-- 对外 API 已收敛为 `POST /memories/write`、`POST /memories/search`、`GET /monitor/status`
-- 蒸馏已采用 typed extraction，并落地为画像/事实/事件/摘要/冲突日志
-- 归档会保留 L1 在线可查，同时导出 L3 冷存
-- 搜索已支持 query intent routing、freshness-aware ranking 与摘要向量召回
-- 自动化回归测试已覆盖写入/查询/归档/蒸馏/对账主链路
-
-### 后续规划
-
-- 增加陈旧语义记忆的自动复核任务
-- 为画像与事实补齐向量索引
-- 提升 reconciliation 的冲突分类与置信度合并能力
-- 增加按周、按月滚动摘要
-- 增加检索质量和蒸馏质量评测工具
-
----
-
-## 15. 常见问题
-
-**Q: L0 自动双写需要配置什么？**
-A: 确保 `L0_AUTO_SYNC_L1=true`，无需其他配置
-
-**Q: 蒸馏没有自动触发？**
-A: 检查：1) 阈值是否达到（默认100条）；2) 调度器是否启用；3) LLM 是否可用
-
-**Q: 归档是按什么触发的？**
-A: 按时间触发（默认每天3:00），自动归档超过30天的数据
-
-**Q: 可以手动触发吗？**
-A: 当前不暴露手动触发接口，蒸馏和归档由后台自动完成
-
----
-
-*文档版本: 0.2.0*
-*更新时间: 2026-03-21*
+1. `README_zh.md`
+2. `README.md`（如需英文版本）
+3. `AGENTS.md` 了解仓库开发约定
+4. 再看本文件补充实现细节

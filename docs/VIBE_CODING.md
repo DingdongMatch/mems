@@ -179,7 +179,7 @@ Qdrant 返回的 payload 是 null，但我知道数据是写入成功的
 ## 环境
 - Python 3.12
 - qdrant-client 1.17.1
-- Qdrant 1.7.4 (Docker)
+- Qdrant 1.15.3 (Docker)
 ```
 
 ---

@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 from mems.config import settings
 from mems.database import init_db
-from mems.routers import memories, monitor
+from mems.routers import memories, monitor, simulator
 from mems.services.scheduler import scheduler_service
 
 
@@ -51,6 +51,7 @@ app = FastAPI(
 
 app.include_router(memories.router)
 app.include_router(monitor.router)
+app.include_router(simulator.router)
 
 
 @app.get("/health")

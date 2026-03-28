@@ -181,7 +181,7 @@ Qdrant returns payload as null, but I know data was written successfully
 ## Environment
 - Python 3.12
 - qdrant-client 1.17.1
-- Qdrant 1.7.4 (Docker)
+- Qdrant 1.15.3 (Docker)
 ```
 
 ---

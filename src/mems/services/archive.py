@@ -21,18 +21,27 @@ class ArchiveService:
     async def archive(
         self,
         agent_id: str,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        scope: Optional[str] = None,
         days: int = 30,
     ) -> ArchiveResponse:
         """执行归档"""
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
 
-        l1_records = self.session.exec(
-            select(MemsL1Episodic).where(
-                MemsL1Episodic.agent_id == agent_id,
-                MemsL1Episodic.created_at < cutoff_date,
-                MemsL1Episodic.is_archived == False,  # noqa: E712
-            )
-        ).all()
+        query = select(MemsL1Episodic).where(
+            MemsL1Episodic.agent_id == agent_id,
+            MemsL1Episodic.created_at < cutoff_date,
+            MemsL1Episodic.is_archived == False,  # noqa: E712
+        )
+        if tenant_id is not None:
+            query = query.where(MemsL1Episodic.tenant_id == tenant_id)
+        if user_id is not None:
+            query = query.where(MemsL1Episodic.user_id == user_id)
+        if scope is not None:
+            query = query.where(MemsL1Episodic.scope == scope)
+
+        l1_records = self.session.exec(query).all()
 
         if not l1_records:
             return ArchiveResponse(
@@ -46,7 +55,11 @@ class ArchiveService:
         archive_dir.mkdir(parents=True, exist_ok=True)
 
         time_period = f"{datetime.now(timezone.utc).strftime('%Y_%m')}_Monthly"
-        filename = f"l3_{agent_id}_{time_period}.jsonl"
+        batch_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        scope_suffix = scope or "default"
+        user_suffix = user_id or "all_users"
+        tenant_suffix = tenant_id or "default"
+        filename = f"l3_{agent_id}_{tenant_suffix}_{user_suffix}_{scope_suffix}_{time_period}_{batch_id}.jsonl"
         filepath = archive_dir / filename
         temp_filepath = archive_dir / f".{filename}.tmp"
 
@@ -55,8 +68,11 @@ class ArchiveService:
             records_to_archive.append(
                 {
                     "id": record.id,
+                    "tenant_id": record.tenant_id,
+                    "user_id": record.user_id,
                     "agent_id": record.agent_id,
                     "session_id": record.session_id,
+                    "scope": record.scope,
                     "content": record.content,
                     "importance_score": record.importance_score,
                     "is_distilled": record.is_distilled,
@@ -66,14 +82,28 @@ class ArchiveService:
                 }
             )
 
-        with open(temp_filepath, "w", encoding="utf-8") as f:
-            for record in records_to_archive:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            with open(temp_filepath, "w", encoding="utf-8") as f:
+                for record in records_to_archive:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            temp_filepath.replace(filepath)
+        except Exception as exc:
+            for record in l1_records:
+                record.archive_status = "failed"
+                record.last_sync_error = f"archive: {exc}"
+                record.last_sync_at = datetime.now(timezone.utc)
+                self.session.add(record)
+            self.session.commit()
+            temp_filepath.unlink(missing_ok=True)
+            raise
 
         summary = f"Archived {len(records_to_archive)} records from {agent_id}"
 
         l3_archive = MemsL3Archive(
+            tenant_id=tenant_id,
+            user_id=user_id,
             agent_id=agent_id,
+            scope=scope,
             time_period=time_period,
             summary_text=summary,
             file_path=str(filepath),
@@ -83,16 +113,12 @@ class ArchiveService:
 
         for record in l1_records:
             record.is_archived = True
+            record.archive_status = "ready"
+            record.last_sync_error = None
+            record.last_sync_at = datetime.now(timezone.utc)
             self.session.add(record)
 
         self.session.commit()
-        with open(filepath, "a", encoding="utf-8") as target, open(
-            temp_filepath,
-            "r",
-            encoding="utf-8",
-        ) as source:
-            target.write(source.read())
-        temp_filepath.unlink(missing_ok=True)
 
         return ArchiveResponse(
             success=True,
@@ -120,7 +146,12 @@ async def trigger_archive_automatically(
                     days=settings.ARCHIVE_DAYS
                 )
                 agent_ids = session.exec(
-                    select(MemsL1Episodic.agent_id)
+                    select(
+                        MemsL1Episodic.tenant_id,
+                        MemsL1Episodic.user_id,
+                        MemsL1Episodic.agent_id,
+                        MemsL1Episodic.scope,
+                    )
                     .where(
                         MemsL1Episodic.created_at < cutoff_date,
                         MemsL1Episodic.is_archived == False,  # noqa: E712
@@ -137,13 +168,16 @@ async def trigger_archive_automatically(
                 }
 
             total_archived = 0
-            for aid in agent_ids:
+            for tenant_id, user_id, aid, scope in agent_ids:
                 if not aid:
                     continue
                 with Session(engine) as session:
                     archive_service = ArchiveService(session)
                     result = await archive_service.archive(
                         agent_id=aid,
+                        tenant_id=tenant_id,
+                        user_id=user_id,
+                        scope=scope,
                         days=settings.ARCHIVE_DAYS,
                     )
                     total_archived += result.archived_count

@@ -6,12 +6,12 @@
 
 ## 1. 项目概述
 
-**Mems** 是一个支持多 Agent 隔离、长周期（100年级）的全自动化分层记忆系统。
+**Mems** 是一个支持多 Agent 隔离、长周期（100年级）的分层记忆系统，面向第三方 Agent 提供清晰的公开 memory API。
 
 ### 核心架构
 
 ```
-L0 (Redis) → L1 (SQL+Qdrant) → L2 (知识三元组) → L3 (归档)
+ L0 (Redis) → L1 (SQL+Qdrant) → L2 (画像/事实/事件/摘要/冲突日志) → L3 (归档)
      ↑
   用户入口
 ```
@@ -36,7 +36,7 @@ src/mems/
 ├── main.py              # FastAPI 入口 + lifespan + 调度器初始化
 ├── config.py            # pydantic-settings 配置（从 .env 读取）
 ├── models.py            # SQLModel 数据库模型
-├── schemas.py           # Pydantic 请求/响应模型
+├── schemas/            # Pydantic 请求/响应模型
 ├── database.py          # SQLModel engine + init_db()
 ├── dependencies.py      # FastAPI 依赖注入
 │
@@ -44,19 +44,20 @@ src/mems/
 │   ├── scheduler.py     # APScheduler 调度服务（单例）
 │   ├── redis_service.py # Redis L0 服务（单例）
 │   ├── l0_sync.py      # L0→L1 同步函数
-│   ├── vector_service.py # Qdrant REST API 封装
+│   ├── vector_service.py # Qdrant 官方 Async SDK 封装
 │   ├── embedding.py     # Embedding 抽象层（策略模式）
-│   ├── llm_client.py    # OpenAI/DashScope LLM 客户端
+│   ├── llm_client.py    # OpenAI-compatible LLM 客户端
 │   ├── distill.py       # L1→L2 蒸馏服务
 │   ├── archive.py      # L1→L3 归档服务
 │   └── jsonl_utils.py  # JSONL 读写工具
 │
+├── static/
+│   └── simulator_playground.html # Simulator 可视化调试页
+│
 └── routers/
-    ├── l0.py           # L0 工作记忆（推荐入口）
-    ├── ingest.py       # L1 直接写入
-    ├── search.py       # 混合检索
-    ├── distill.py       # 蒸馏触发
-    └── archive.py      # 归档触发
+    ├── memories.py     # /memories/write + /memories/turns + /memories/context + /memories/search
+    ├── simulator.py    # /simulator/chat + /simulator/chat/stream + /simulator/playground
+    └── monitor.py      # /monitor/status
 ```
 
 ---
@@ -82,6 +83,32 @@ router = APIRouter(prefix="/example", tags=["Example"])
 async def create_example(session: Session = Depends(get_session)):
     ...
 ```
+
+### 3.1.1 当前公开 API 约定
+
+- `POST /memories/write`: 写入工作记忆快照
+- `POST /memories/turns`: 按 turn 追加会话消息，适合第三方 Agent 接入
+- `GET /memories/context`: 获取当前 `session_id` 的上下文，优先读 L0，失败回退 L1
+- `POST /memories/search`: 做长期语义检索
+- `POST /simulator/chat`: 官方参考 Agent，只通过公开 API 模拟第三方接入
+- `POST /simulator/chat/stream`: 流式返回 simulator 输出
+- `GET /simulator/playground`: 浏览器调试页，展示聊天、prompt、context、search trace
+
+### 3.1.2 Memory Identity Model
+
+当前公开 memory API 已支持以下 identity 字段：
+
+- `tenant_id`: 可选租户 / 组织边界
+- `user_id`: 多用户 Agent 场景下建议显式传入
+- `agent_id`: Agent 边界
+- `session_id`: 会话边界
+- `scope`: 上层业务自定义的可见性标签
+
+推荐原则：
+
+- `tenant_id / user_id / agent_id / session_id` 是硬边界
+- `scope` 是软可见性标签，由上层业务定义
+- 默认不要只靠 `agent_id` 做多用户隔离
 
 ### 3.2 新增数据库模型
 
@@ -150,7 +177,7 @@ session: Session = Depends(get_session)
 ```python
 # 获取 redis 服务
 redis: RedisService = Depends(get_redis_service)
-await redis.write(...)
+await redis.write(tenant_id=..., user_id=..., agent_id=..., session_id=..., ...)
 ```
 
 ### 4.3 Embedding 服务
@@ -167,7 +194,7 @@ vectors = await embedding_service.embed(["text"])
 # 获取向量服务
 vector_service = await get_vector_service()
 await vector_service.upsert("collection_name", points)
-results = await vector_service.search("collection_name", query_vector)
+results = await vector_service.search("collection_name", query_vector, filters={...})
 ```
 
 ---
@@ -176,12 +203,13 @@ results = await vector_service.search("collection_name", query_vector)
 
 ### 5.1 L0→L1 自动双写
 
-用户调用 `/l0/write` 时，自动同步到 L1。
+用户调用 `/memories/write` 或 `/memories/turns` 时，可自动同步到 L1。
 
 ### 5.2 蒸馏任务
 
 - **阈值触发**: 未蒸馏 L1 > 100 条
-- **定时触发**: 每天 2:00 AM
+- **定时检查**: 每天 2:00 AM 执行阈值检查
+- **运行前提**: 当前蒸馏依赖可用的 OpenAI-compatible LLM 配置
 
 ```python
 # services/distill.py
@@ -256,6 +284,17 @@ except Exception:
     raise
 ```
 
+### 7.4 第三方 Agent 接入时序
+
+推荐统一按照下面时序设计和调试：
+
+1. `GET /memories/context`
+2. `POST /memories/search`
+3. 第三方 Agent 组装 prompt 并生成回答
+4. `POST /memories/turns`
+
+`/simulator/chat` 就是这条时序的官方参考实现，不能绕过公开 API 直接调用内部 service。
+
 ---
 
 ## 8. 测试
@@ -293,9 +332,9 @@ uvicorn src.mems.main:app --reload --port 8000
 |------|------|
 | `DATABASE_URL` | 数据库连接 |
 | `REDIS_HOST/PORT` | Redis 连接 |
-| `QDRANT_HOST/PORT` | Qdrant 连接 |
+| `QDRANT_URL` / `QDRANT_HOST/PORT` | Qdrant 连接 |
 | `EMBEDDING_PROVIDER` | embedding 模型 (sentence-transformers/openai) |
-| `OPENAI_*` | LLM 配置 (OpenAI/DashScope) |
+| `OPENAI_*` | OpenAI-compatible LLM / embedding 配置 |
 | `SCHEDULER_ENABLED` | 启用调度器 |
 
 ---

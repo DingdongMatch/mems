@@ -11,6 +11,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from mems.database import get_session
 from mems.main import app
+from mems.services.redis_service import get_redis_service
 
 
 @dataclass
@@ -23,7 +24,7 @@ class FakeRedisClient:
 
 class FakeRedisService:
     def __init__(self) -> None:
-        self._store: dict[tuple[str, str], Any] = {}
+        self._store: dict[tuple[str | None, str | None, str | None, str, str], Any] = {}
         self._client = FakeRedisClient(self)
 
     async def get_client(self) -> FakeRedisClient:
@@ -31,9 +32,12 @@ class FakeRedisService:
 
     async def write(
         self,
+        tenant_id: str | None,
+        user_id: str | None,
         agent_id: str,
         session_id: str,
         messages: list[dict[str, str]],
+        scope: str | None = None,
         active_plan: str | None = None,
         temp_variables: dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
@@ -41,21 +45,86 @@ class FakeRedisService:
         from mems.schemas import MemsL0Working
 
         l0 = MemsL0Working(
+            tenant_id=tenant_id,
+            user_id=user_id,
             agent_id=agent_id,
             session_id=session_id,
+            scope=scope,
             short_term_buffer=messages,
             active_plan=active_plan,
             temp_variables=temp_variables or {},
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         )
-        self._store[(agent_id, session_id)] = l0
+        self._store[(tenant_id, user_id, scope, agent_id, session_id)] = l0
         return l0
 
-    async def read(self, agent_id: str, session_id: str):
-        return self._store.get((agent_id, session_id))
+    async def read(
+        self,
+        agent_id: str,
+        session_id: str,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        scope: str | None = None,
+    ):
+        return self._store.get((tenant_id, user_id, scope, agent_id, session_id))
 
-    async def delete(self, agent_id: str, session_id: str) -> bool:
-        return self._store.pop((agent_id, session_id), None) is not None
+    async def delete(
+        self,
+        agent_id: str,
+        session_id: str,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        scope: str | None = None,
+    ) -> bool:
+        return (
+            self._store.pop((tenant_id, user_id, scope, agent_id, session_id), None)
+            is not None
+        )
+
+    async def append_messages(
+        self,
+        tenant_id: str | None,
+        user_id: str | None,
+        agent_id: str,
+        session_id: str,
+        messages: list[dict[str, str]],
+        ttl_seconds: int = 1800,
+        max_buffer_size: int = 10,
+        scope: str | None = None,
+        active_plan: str | None = None,
+        temp_variables: dict[str, Any] | None = None,
+    ):
+        existing = self._store.get((tenant_id, user_id, scope, agent_id, session_id))
+        if existing is None:
+            return await self.write(
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                session_id=session_id,
+                messages=messages[-max_buffer_size:],
+                scope=scope,
+                active_plan=active_plan,
+                temp_variables=temp_variables,
+                ttl_seconds=ttl_seconds,
+            )
+
+        merged_variables = dict(existing.temp_variables)
+        if temp_variables:
+            merged_variables.update(temp_variables)
+
+        return await self.write(
+            tenant_id=tenant_id,
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+            messages=(existing.short_term_buffer + messages)[-max_buffer_size:],
+            scope=scope if scope is not None else existing.scope,
+            active_plan=active_plan
+            if active_plan is not None
+            else existing.active_plan,
+            temp_variables=merged_variables,
+            ttl_seconds=ttl_seconds,
+        )
 
 
 class FakeEmbeddingService:
@@ -90,12 +159,17 @@ class FakeVectorService:
         query_vector: list[float],
         top_k: int = 5,
         filter_agent_id: str | None = None,
+        filters: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         collection = self.collections.get(collection_name, {})
         results = []
         for point in collection.values():
             payload = point.get("payload", {})
             if filter_agent_id and payload.get("agent_id") != filter_agent_id:
+                continue
+            if filters and any(
+                payload.get(key) != value for key, value in filters.items() if value
+            ):
                 continue
             score = 1.0 / (1.0 + abs(point["vector"][0] - query_vector[0]))
             if payload.get("memory_type") == "l2_summary":
@@ -214,16 +288,6 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return json.dumps(payload, ensure_ascii=False)
 
     monkeypatch.setattr(
-        "mems.routers.memories.get_redis_service", get_fake_redis_service
-    )
-    monkeypatch.setattr(
-        "mems.routers.monitor.get_redis_service", get_fake_redis_service
-    )
-    monkeypatch.setattr(
-        "mems.services.l0_sync.get_redis_service", get_fake_redis_service, raising=False
-    )
-
-    monkeypatch.setattr(
         "mems.routers.memories.get_vector_service", get_fake_vector_service
     )
     monkeypatch.setattr(
@@ -231,6 +295,9 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(
         "mems.services.l0_sync.get_vector_service", get_fake_vector_service
+    )
+    monkeypatch.setattr(
+        "mems.services.distill.get_vector_service", get_fake_vector_service
     )
 
     monkeypatch.setattr(
@@ -245,6 +312,7 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("mems.routers.monitor.engine", engine)
 
     app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_redis_service] = get_fake_redis_service
 
     try:
         yield app, engine, redis_service, vector_service
