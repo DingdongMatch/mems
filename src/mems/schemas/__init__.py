@@ -43,7 +43,12 @@ class MemoryContextRequest(BaseModel):
     agent_id: str
     session_id: str
     scope: Optional[str] = None
-    limit: int = Field(default=10, ge=1, le=100)
+    limit: int = Field(default=10, ge=1, le=100, description="L1 record 分页大小")
+    before_id: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="历史分页游标；传入后返回 id 小于该值的更早 L1 record",
+    )
 
 
 class MemoryTurn(BaseModel):
@@ -128,9 +133,15 @@ class MemoryContextResponse(BaseModel):
     agent_id: str
     session_id: str
     scope: Optional[str] = None
-    source: str = Field(description="上下文来源: l0 或 l1_fallback")
+    source: str = Field(description="上下文来源: l0、l1 或 mixed")
+    page_type: str = Field(description="live 表示首页上下文，history 表示历史翻页")
     messages: List[Dict[str, str]] = Field(default_factory=list)
-    total: int
+    total: int = Field(description="当前页返回的 message 数量")
+    has_more: bool = Field(default=False, description="是否还有更早的历史页")
+    next_before_id: Optional[int] = Field(
+        default=None,
+        description="下一页历史查询游标；前端懒加载时回传到 before_id",
+    )
     expires_at: Optional[datetime] = None
 
 
@@ -158,7 +169,10 @@ class SimulatorChatDebug(BaseModel):
     session_id: str
     scope: Optional[str] = None
     context_source: str
+    context_page_type: str = "live"
     context_messages_count: int
+    context_has_more: bool = False
+    context_next_before_id: Optional[int] = None
     search_hits: int
     used_sources: List[str] = Field(default_factory=list)
     memory_write_success: bool

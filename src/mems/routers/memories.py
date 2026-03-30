@@ -35,6 +35,8 @@ from mems.services.vector_service import get_vector_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/memories", tags=["Memories"])
 DEFAULT_CONTEXT_WINDOW = 20
+SEARCH_CANDIDATE_LIMIT_MULTIPLIER = 10
+SEARCH_MIN_CANDIDATE_LIMIT = 50
 
 INTENT_KEYWORDS = {
     "profile": {
@@ -205,6 +207,41 @@ def _extract_l1_messages(record: MemsL1Episodic) -> list[dict[str, str]]:
     return _parse_l1_content_to_messages(record.content)
 
 
+def _merge_live_messages(
+    history_messages: list[dict[str, str]], live_messages: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    if not history_messages:
+        return list(live_messages)
+    if not live_messages:
+        return list(history_messages)
+
+    if len(live_messages) >= len(history_messages):
+        for start in range(len(live_messages) - len(history_messages) + 1):
+            if live_messages[start : start + len(history_messages)] == history_messages:
+                return list(live_messages)
+
+    max_overlap = min(len(history_messages), len(live_messages))
+    for overlap in range(max_overlap, 0, -1):
+        if history_messages[-overlap:] == live_messages[:overlap]:
+            return history_messages + live_messages[overlap:]
+    return history_messages + live_messages
+
+
+def _expand_l1_page(
+    records: list[MemsL1Episodic], page_limit: int
+) -> tuple[list[dict[str, str]], bool, int | None]:
+    has_more = len(records) > page_limit
+    page_records = records[:page_limit]
+
+    page_records = list(reversed(page_records))
+    messages: list[dict[str, str]] = []
+    for record in page_records:
+        messages.extend(_extract_l1_messages(record))
+
+    next_before_id = page_records[0].id if has_more and page_records else None
+    return messages, has_more, next_before_id
+
+
 def _with_identity_filters(query, model, request) -> Any:
     if request.tenant_id is not None:
         query = query.where(model.tenant_id == request.tenant_id)
@@ -324,20 +361,42 @@ async def search_memory(
             if payload.get("memory_type") == "l2_summary"
         }
 
+        candidate_limit = max(
+            request.top_k * SEARCH_CANDIDATE_LIMIT_MULTIPLIER,
+            SEARCH_MIN_CANDIDATE_LIMIT,
+        )
+
         results = []
         seen_l1_ids = set()
+        vector_ids = []
 
         for result in vector_results:
             payload = result.get("payload") or {}
             vector_id = payload.get("vector_id") or result.get("id")
+            if vector_id is None:
+                continue
+            vector_ids.append(str(vector_id))
+
+        l1_records_by_vector_id: dict[str, MemsL1Episodic] = {}
+        if vector_ids:
             l1_query = select(MemsL1Episodic).where(
                 MemsL1Episodic.agent_id == request.agent_id,
-                MemsL1Episodic.vector_id == str(vector_id),
+                MemsL1Episodic.vector_id.in_(vector_ids),
                 MemsL1Episodic.is_archived == False,  # noqa: E712
             )
-            l1_record = session.exec(
+            l1_records = session.exec(
                 _with_identity_filters(l1_query, MemsL1Episodic, request)
-            ).first()
+            ).all()
+            l1_records_by_vector_id = {
+                record.vector_id: record for record in l1_records if record.vector_id
+            }
+
+        for result in vector_results:
+            payload = result.get("payload") or {}
+            vector_id = payload.get("vector_id") or result.get("id")
+            if vector_id is None:
+                continue
+            l1_record = l1_records_by_vector_id.get(str(vector_id))
             if not l1_record or l1_record.id in seen_l1_ids:
                 continue
 
@@ -366,10 +425,13 @@ async def search_memory(
 
         profile_items = session.exec(
             _with_identity_filters(
-                select(MemsL2ProfileItem).where(
+                select(MemsL2ProfileItem)
+                .where(
                     MemsL2ProfileItem.agent_id == request.agent_id,
                     MemsL2ProfileItem.status == "active",
-                ),
+                )
+                .order_by(MemsL2ProfileItem.last_verified_at.desc())
+                .limit(candidate_limit),
                 MemsL2ProfileItem,
                 request,
             )
@@ -405,10 +467,13 @@ async def search_memory(
 
         fact_items = session.exec(
             _with_identity_filters(
-                select(MemsL2Fact).where(
+                select(MemsL2Fact)
+                .where(
                     MemsL2Fact.agent_id == request.agent_id,
                     MemsL2Fact.status == "active",
-                ),
+                )
+                .order_by(MemsL2Fact.last_verified_at.desc())
+                .limit(candidate_limit),
                 MemsL2Fact,
                 request,
             )
@@ -442,7 +507,10 @@ async def search_memory(
 
         event_items = session.exec(
             _with_identity_filters(
-                select(MemsL2Event).where(MemsL2Event.agent_id == request.agent_id),
+                select(MemsL2Event)
+                .where(MemsL2Event.agent_id == request.agent_id)
+                .order_by(MemsL2Event.created_at.desc())
+                .limit(candidate_limit),
                 MemsL2Event,
                 request,
             )
@@ -476,7 +544,10 @@ async def search_memory(
 
         summary_items = session.exec(
             _with_identity_filters(
-                select(MemsL2Summary).where(MemsL2Summary.agent_id == request.agent_id),
+                select(MemsL2Summary)
+                .where(MemsL2Summary.agent_id == request.agent_id)
+                .order_by(MemsL2Summary.last_verified_at.desc())
+                .limit(candidate_limit),
                 MemsL2Summary,
                 request,
             )
@@ -526,8 +597,12 @@ async def search_memory(
 @router.get(
     "/context",
     response_model=MemoryContextResponse,
-    summary="Get session context",
-    description="Return the current session context from L0 first and fall back to L1 replay when L0 is unavailable.",
+    summary="Get paginated session context",
+    description=(
+        "Return the live context page for a session. The first page merges Redis L0 live context "
+        "with the latest L1 records when needed, while `before_id` loads older L1 history pages. "
+        "The `limit` parameter is the number of L1 records per page."
+    ),
 )
 async def get_memory_context(
     tenant_id: str | None = Query(default=None),
@@ -536,10 +611,11 @@ async def get_memory_context(
     session_id: str = Query(...),
     scope: str | None = Query(default=None),
     limit: int = Query(default=10, ge=1, le=100),
+    before_id: int | None = Query(default=None, ge=1),
     redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
 ):
-    """获取当前会话上下文，优先从 L0 读取，失败回退到 L1。"""
+    """获取当前会话上下文首页或历史分页。"""
     try:
         request = MemoryContextRequest(
             tenant_id=tenant_id,
@@ -548,7 +624,42 @@ async def get_memory_context(
             session_id=session_id,
             scope=scope,
             limit=limit,
+            before_id=before_id,
         )
+
+        l1_query = select(MemsL1Episodic).where(
+            MemsL1Episodic.agent_id == request.agent_id,
+            MemsL1Episodic.session_id == request.session_id,
+        )
+        if request.before_id is not None:
+            l1_query = l1_query.where(MemsL1Episodic.id < request.before_id)
+        l1_records = session.exec(
+            _with_identity_filters(
+                l1_query.order_by(MemsL1Episodic.id.desc()).limit(request.limit + 1),
+                MemsL1Episodic,
+                request,
+            )
+        ).all()
+        l1_messages, has_more, next_before_id = _expand_l1_page(
+            l1_records, request.limit
+        )
+
+        if request.before_id is not None:
+            return MemoryContextResponse(
+                tenant_id=request.tenant_id,
+                user_id=request.user_id,
+                agent_id=request.agent_id,
+                session_id=request.session_id,
+                scope=request.scope,
+                source="l1",
+                page_type="history",
+                messages=l1_messages,
+                total=len(l1_messages),
+                has_more=has_more,
+                next_before_id=next_before_id,
+                expires_at=None,
+            )
+
         l0 = await redis.read(
             request.agent_id,
             request.session_id,
@@ -556,50 +667,30 @@ async def get_memory_context(
             user_id=request.user_id,
             scope=request.scope,
         )
-        if l0 is not None and l0.short_term_buffer:
-            messages = l0.short_term_buffer[-request.limit :]
-            return MemoryContextResponse(
-                tenant_id=request.tenant_id,
-                user_id=request.user_id,
-                agent_id=request.agent_id,
-                session_id=request.session_id,
-                scope=l0.scope,
-                source="l0",
-                messages=messages,
-                total=len(messages),
-                expires_at=l0.expires_at,
-            )
+        live_messages = l0.short_term_buffer if l0 is not None else []
+        messages = _merge_live_messages(l1_messages, live_messages)
+        if live_messages and messages == live_messages:
+            source = "l0"
+        elif l1_messages and live_messages:
+            source = "mixed"
+        elif live_messages:
+            source = "l0"
+        else:
+            source = "l1"
 
-        l1_records = list(
-            session.exec(
-                _with_identity_filters(
-                    select(MemsL1Episodic).where(
-                        MemsL1Episodic.agent_id == request.agent_id,
-                        MemsL1Episodic.session_id == request.session_id,
-                    ),
-                    MemsL1Episodic,
-                    request,
-                )
-            ).all()
-        )
-        l1_records = sorted(l1_records, key=lambda record: record.id or 0)
-        l1_records = l1_records[-request.limit :]
-
-        messages: list[dict[str, str]] = []
-        for record in l1_records:
-            messages.extend(_extract_l1_messages(record))
-
-        messages = messages[-request.limit :]
         return MemoryContextResponse(
             tenant_id=request.tenant_id,
             user_id=request.user_id,
             agent_id=request.agent_id,
             session_id=request.session_id,
-            scope=request.scope,
-            source="l1_fallback",
+            scope=l0.scope if l0 is not None else request.scope,
+            source=source,
+            page_type="live",
             messages=messages,
             total=len(messages),
-            expires_at=None,
+            has_more=has_more,
+            next_before_id=next_before_id,
+            expires_at=l0.expires_at if l0 is not None else None,
         )
     except Exception as e:
         logger.error(f"Failed to get memory context: {e}")

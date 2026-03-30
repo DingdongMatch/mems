@@ -57,7 +57,7 @@ Mems 的思路是：把不同类型的记忆分层，并自动完成层与层之
 
 ```text
 第三方 Agent
-  -> GET /memories/context   -> 当前会话窗口（优先 L0，回退 L1）
+  -> GET /memories/context   -> 当前 live 上下文首页 + 懒加载历史分页
   -> POST /memories/search   -> 默认长期记忆召回（活跃 L1 + L2）
   -> 组装 prompt / 生成回答
   -> POST /memories/turns    -> 把新一轮对话写回系统
@@ -121,7 +121,7 @@ Mems 的思路是：把不同类型的记忆分层，并自动完成层与层之
 
 推荐的公开接口时序只有四步：
 
-1. `GET /memories/context` 取当前会话窗口
+1. `GET /memories/context` 取当前 live 上下文首页，并按需懒加载更早历史
 2. `POST /memories/search` 取长期记忆
 3. 由 Agent 自己组装 prompt 并生成回答
 4. `POST /memories/turns` 把这轮 user / assistant 写回
@@ -151,7 +151,7 @@ Mems 现在通过统一的 identity model 同时支持单用户和多用户 Agen
 |------|------|------|
 | `/memories/write` | `POST` | 写入工作记忆快照，并自动落到 L0/L1 |
 | `/memories/turns` | `POST` | 像真实第三方 Agent 一样按 turn 追加消息 |
-| `/memories/context` | `GET` | 读取某个 `session_id` 的最近上下文 |
+| `/memories/context` | `GET` | 读取某个 `session_id` 的 live 首页与分页历史 |
 | `/memories/search` | `POST` | 做默认在线长期记忆检索（活跃 L1 + L2） |
 | `/simulator/chat` | `POST` | 运行官方参考 Agent |
 | `/simulator/chat/stream` | `POST` | 以流式方式返回 simulator 输出 |
@@ -166,6 +166,14 @@ Mems 现在通过统一的 identity model 同时支持单用户和多用户 Agen
 - `/memories/turns` 还支持 `persist_to_l1`、`ttl_seconds`、`active_plan`、`temp_variables`
 - L0 会话上下文会保留一个有限的最近窗口，更像滚动聊天缓冲区，而不是无限增长的全文转录
 
+### `/memories/context` 分页规则
+
+- 不传 `before_id` 时，返回某个 session 的 live 首页
+- live 首页优先使用 Redis L0；如果 Redis 不能完整覆盖最近已持久化内容，会补充合并最新 L1 记录
+- 前端把上一次响应中的 `next_before_id` 传回 `before_id`，即可继续向前懒加载更早的 L1 历史
+- `limit` 表示每页读取的 L1 record 数量，不是最终 message 数量
+- 响应中会返回 `page_type`、`has_more`、`next_before_id`，供前端分页使用
+
 ### 多用户查询默认规则
 
 - 如果请求中带了 `tenant_id`、`user_id` 或 `scope`，Mems 会把它们作为检索和写入边界
@@ -176,7 +184,7 @@ Mems 现在通过统一的 identity model 同时支持单用户和多用户 Agen
 
 Mems 刻意没有用“一个数据库包打天下”的方案，而是做了分工：
 
-- **Redis 放 L0**：会话上下文快、便宜、适合 TTL
+- **Redis 放 L0**：适合 live 首页上下文，快、便宜、适合 TTL
 - **SQL 放 L1 / L2 元数据**：适合结构化查询、状态标记、溯源和对账
 - **Qdrant 放向量**：负责语义召回
 - **JSONL 放归档**：长期可读、低耦合、容易检查
@@ -303,8 +311,11 @@ curl -X POST http://localhost:8000/memories/turns \
     ]
   }'
 
-# 读取当前会话上下文
+# 读取当前 live 上下文首页
 curl "http://localhost:8000/memories/context?tenant_id=acme&user_id=user-42&agent_id=demo-agent&session_id=demo-session&scope=private&limit=10"
+
+# 读取更早的一页历史
+curl "http://localhost:8000/memories/context?tenant_id=acme&user_id=user-42&agent_id=demo-agent&session_id=demo-session&scope=private&limit=10&before_id=120"
 
 # 检索长期记忆
 curl -X POST http://localhost:8000/memories/search \

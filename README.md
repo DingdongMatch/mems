@@ -57,7 +57,7 @@ Think of Mems as four shelves:
 
 ```text
 Third-party Agent
-  -> GET /memories/context   -> current session window (L0 first, L1 fallback)
+  -> GET /memories/context   -> live context page + lazy-loaded session history
   -> POST /memories/search   -> default long-term recall (active L1 + L2)
   -> build prompt / generate answer
   -> POST /memories/turns    -> persist the new exchange
@@ -121,7 +121,7 @@ Background pipeline
 
 The public integration path is intentionally simple:
 
-1. `GET /memories/context` to rebuild the current session window
+1. `GET /memories/context` to load the live context page and lazily page older history
 2. `POST /memories/search` to fetch useful long-term memory
 3. let the agent generate an answer using its own prompt logic
 4. `POST /memories/turns` to write the new user/assistant exchange back
@@ -151,7 +151,7 @@ Single-user apps can keep this simple by using one `user_id` and leaving `tenant
 |----------|--------|---------|
 | `/memories/write` | `POST` | write a working-memory snapshot and auto-persist to L0/L1 |
 | `/memories/turns` | `POST` | append session turns like a real third-party agent |
-| `/memories/context` | `GET` | fetch recent context for one `session_id` |
+| `/memories/context` | `GET` | fetch the live context page and paginated history for one `session_id` |
 | `/memories/search` | `POST` | run default long-term retrieval across active L1 and L2 |
 | `/simulator/chat` | `POST` | run the official reference agent |
 | `/simulator/chat/stream` | `POST` | stream simulator output for playground-style chat UX |
@@ -166,6 +166,14 @@ Single-user apps can keep this simple by using one `user_id` and leaving `tenant
 - `/memories/turns` also supports `persist_to_l1`, `ttl_seconds`, `active_plan`, and `temp_variables`
 - L0 session context is trimmed to a bounded recent window, so it behaves like a rolling chat buffer rather than an unbounded transcript
 
+### `/memories/context` Pagination Rules
+
+- the first request without `before_id` returns the live page for one session
+- the live page prefers Redis L0 and may merge in the newest L1 records when Redis does not fully cover the latest persisted history
+- pass `before_id` from the previous response's `next_before_id` to fetch older L1 history
+- `limit` is the number of L1 records per page, not the final message count
+- the response includes `page_type`, `has_more`, and `next_before_id` so the frontend can lazy-load older turns
+
 ### Multi-User Query Rules
 
 - if `tenant_id`, `user_id`, or `scope` are provided, Mems uses them as retrieval and persistence filters
@@ -176,7 +184,7 @@ Single-user apps can keep this simple by using one `user_id` and leaving `tenant
 
 Mems is intentionally hybrid instead of all-in on one database.
 
-- **Redis for L0**: cheap and fast session context
+- **Redis for L0**: cheap and fast live session context for the first page
 - **SQL for L1/L2 metadata**: structured queries, lineage, status flags, reconciliation
 - **Qdrant for vectors**: semantic recall where exact matching is not enough
 - **JSONL for archival durability**: plain text that survives tooling changes and is easy to inspect
@@ -299,8 +307,11 @@ curl -X POST http://localhost:8000/memories/turns \
     ]
   }'
 
-# Read current session context
+# Read the live context page
 curl "http://localhost:8000/memories/context?tenant_id=acme&user_id=user-42&agent_id=demo-agent&session_id=demo-session&scope=private&limit=10"
+
+# Read an older history page
+curl "http://localhost:8000/memories/context?tenant_id=acme&user_id=user-42&agent_id=demo-agent&session_id=demo-session&scope=private&limit=10&before_id=120"
 
 # Search long-term memory
 curl -X POST http://localhost:8000/memories/search \

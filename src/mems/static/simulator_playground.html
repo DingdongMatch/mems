@@ -274,6 +274,10 @@
         padding: 14px 16px;
         border-bottom: 1px solid var(--line);
         background: rgba(255, 255, 255, 0.58);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
       }
 
       .debug-card .content {
@@ -323,6 +327,27 @@
       .empty {
         color: var(--muted);
         font-style: italic;
+      }
+
+      .secondary-button {
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.82);
+        color: var(--accent-deep);
+        font-size: 12px;
+      }
+
+      .context-tools {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .context-meta {
+        margin-bottom: 12px;
+        color: var(--muted);
+        font-size: 12px;
       }
 
       @keyframes rise {
@@ -448,7 +473,12 @@
                 <div class="content" id="identity-panel"></div>
               </section>
               <section class="debug-card">
-                <header><h3 data-i18n="contextTitle">Context</h3></header>
+                <header>
+                  <h3 data-i18n="contextTitle">Context</h3>
+                  <div class="context-tools">
+                    <button id="load-history" class="secondary-button" type="button" data-i18n="loadHistoryButton">Load older history</button>
+                  </div>
+                </header>
                 <div class="content" id="context-panel"></div>
               </section>
               <section class="debug-card full">
@@ -483,9 +513,19 @@
       const welcomeBubble = document.getElementById("welcome-bubble");
       const langEnButton = document.getElementById("lang-en");
       const langZhButton = document.getElementById("lang-zh");
+      const loadHistoryButton = document.getElementById("load-history");
+      const contextPanel = document.getElementById("context-panel");
       const heroTitle = document.getElementById("hero-title");
       let currentLang = "en";
       let lastResponse = null;
+      let isLoadingHistory = false;
+      let contextState = {
+        messages: [],
+        nextBeforeId: null,
+        hasMore: false,
+        source: null,
+        pageType: null,
+      };
 
       const I18N = {
         en: {
@@ -517,6 +557,11 @@
           mode: "Mode",
           contextMetric: "Context",
           searchMetric: "Search Hits",
+          historyButton: "Load older history",
+          loadingHistory: "Loading older history...",
+          noMoreHistory: "No older history available.",
+          historyLoaded: "Older history loaded.",
+          contextMeta: "Source: {source} | Page: {pageType} | Messages: {count}",
           noContext: "No context messages were returned.",
           noSearch: "No long-term memory hits.",
           noPrompt: "This request used a template response and did not build an LLM prompt.",
@@ -555,6 +600,11 @@
           mode: "模式",
           contextMetric: "上下文",
           searchMetric: "检索命中",
+          historyButton: "加载更早历史",
+          loadingHistory: "正在加载更早历史...",
+          noMoreHistory: "没有更早历史了。",
+          historyLoaded: "已加载更早历史。",
+          contextMeta: "来源：{source} | 页面：{pageType} | 消息数：{count}",
           noContext: "当前没有返回上下文消息。",
           noSearch: "当前没有长期记忆命中。",
           noPrompt: "这次请求走了模板降级响应，没有构建 LLM prompt。",
@@ -568,6 +618,13 @@
 
       function t(key) {
         return I18N[currentLang][key] || I18N.en[key] || key;
+      }
+
+      function formatText(template, values) {
+        return Object.entries(values).reduce(
+          (text, [key, value]) => text.replace(`{${key}}`, String(value)),
+          template,
+        );
       }
 
       function appendBubble(role, content) {
@@ -619,11 +676,20 @@
         }
       }
 
-      function renderList(containerId, items, emptyText, formatter) {
+      function renderList(containerId, items, emptyText, formatter, metaText = "") {
         const container = document.getElementById(containerId);
         container.innerHTML = "";
+        if (metaText) {
+          const meta = document.createElement("div");
+          meta.className = "context-meta";
+          meta.textContent = metaText;
+          container.appendChild(meta);
+        }
         if (!items || items.length === 0) {
-          container.innerHTML = `<div class="empty">${emptyText}</div>`;
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          empty.textContent = emptyText;
+          container.appendChild(empty);
           return;
         }
         items.forEach((item) => {
@@ -645,6 +711,85 @@
           pre.textContent = `${message.role}\n\n${message.content}`;
           panel.appendChild(pre);
         });
+      }
+
+      function updateHistoryButton() {
+        loadHistoryButton.disabled = !contextState.hasMore || isLoadingHistory;
+      }
+
+      async function loadOlderHistory() {
+        if (!contextState.hasMore || !contextState.nextBeforeId || isLoadingHistory) {
+          if (!isLoadingHistory && !contextState.hasMore) {
+            statusEl.textContent = t("noMoreHistory");
+          }
+          updateHistoryButton();
+          return;
+        }
+
+        const params = new URLSearchParams({
+          agent_id: agentInput.value.trim() || "__reference_agent__",
+          session_id: sessionInput.value.trim() || "playground-session",
+          limit: "10",
+          before_id: String(contextState.nextBeforeId),
+        });
+        const tenantId = tenantInput.value.trim();
+        const userId = userInput.value.trim();
+        const scope = scopeInput.value.trim();
+        if (tenantId) params.set("tenant_id", tenantId);
+        if (userId) params.set("user_id", userId);
+        if (scope) params.set("scope", scope);
+
+        isLoadingHistory = true;
+        updateHistoryButton();
+        const previousHeight = contextPanel.scrollHeight;
+        statusEl.textContent = t("loadingHistory");
+
+        try {
+          const response = await fetch(`/memories/context?${params.toString()}`);
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(errorText || "Context history request failed");
+          }
+          const payload = await response.json();
+          renderContext([...payload.messages, ...contextState.messages], {
+            source: payload.source,
+            pageType: payload.page_type,
+            hasMore: payload.has_more,
+            nextBeforeId: payload.next_before_id,
+          });
+          const newHeight = contextPanel.scrollHeight;
+          contextPanel.scrollTop += newHeight - previousHeight;
+          statusEl.textContent = t("historyLoaded");
+        } catch (error) {
+          statusEl.textContent = `${t("failed")} ${error.message}`;
+        } finally {
+          isLoadingHistory = false;
+          updateHistoryButton();
+        }
+      }
+
+      function renderContext(messages, meta = {}) {
+        contextState = {
+          ...contextState,
+          messages,
+          nextBeforeId: meta.nextBeforeId ?? contextState.nextBeforeId,
+          hasMore: meta.hasMore ?? contextState.hasMore,
+          source: meta.source ?? contextState.source,
+          pageType: meta.pageType ?? contextState.pageType,
+        };
+        const metaText = formatText(t("contextMeta"), {
+          source: contextState.source || "-",
+          pageType: contextState.pageType || "-",
+          count: contextState.messages.length,
+        });
+        renderList(
+          "context-panel",
+          contextState.messages,
+          t("noContext"),
+          (item) => `${item.role}: ${item.content}`,
+          metaText,
+        );
+        updateHistoryButton();
       }
 
       function renderIdentity(payload) {
@@ -681,10 +826,16 @@
         renderIdentity(data.debug);
         renderList(
           "context-panel",
-          data.debug.context_messages,
+          [],
           t("noContext"),
           (item) => `${item.role}: ${item.content}`,
         );
+        renderContext(data.debug.context_messages, {
+          source: data.debug.context_source,
+          pageType: data.debug.context_page_type || "live",
+          hasMore: data.debug.context_has_more || false,
+          nextBeforeId: data.debug.context_next_before_id || null,
+        });
         renderList(
           "search-panel",
           data.retrieved_memories,
@@ -713,10 +864,12 @@
         if (welcomeBubble && chatStream.children.length === 1) {
           welcomeBubble.textContent = t("welcome");
         }
+        loadHistoryButton.textContent = t("historyButton");
         if (lastResponse) {
           renderResponse(lastResponse);
         } else {
           statusEl.textContent = t("ready");
+          updateHistoryButton();
         }
         updateLanguageButtons();
       }
@@ -780,12 +933,12 @@
             for (const item of parsed.events) {
               if (item.event === "meta") {
                 renderIdentity(item.data);
-                renderList(
-                  "context-panel",
-                  item.data.context_messages,
-                  t("noContext"),
-                  (entry) => `${entry.role}: ${entry.content}`,
-                );
+                renderContext(item.data.context_messages || [], {
+                  source: item.data.context_source,
+                  pageType: item.data.page_type || "live",
+                  hasMore: item.data.has_more || false,
+                  nextBeforeId: item.data.next_before_id || null,
+                });
                 renderList(
                   "search-panel",
                   item.data.retrieved_memories,
@@ -809,6 +962,14 @@
           statusEl.textContent = t("failed");
         } finally {
           sendButton.disabled = false;
+        }
+      });
+
+      loadHistoryButton.addEventListener("click", loadOlderHistory);
+
+      contextPanel.addEventListener("scroll", () => {
+        if (contextPanel.scrollTop <= 8) {
+          loadOlderHistory();
         }
       });
 

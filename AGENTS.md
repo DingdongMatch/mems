@@ -88,7 +88,7 @@ async def create_example(session: Session = Depends(get_session)):
 
 - `POST /memories/write`: 写入工作记忆快照
 - `POST /memories/turns`: 按 turn 追加会话消息，适合第三方 Agent 接入
-- `GET /memories/context`: 获取当前 `session_id` 的上下文，优先读 L0，失败回退 L1
+- `GET /memories/context`: 获取当前 `session_id` 的 live 首页，并可通过 `before_id` 分页读取更早的 L1 历史
 - `POST /memories/search`: 做长期语义检索
 - `POST /simulator/chat`: 官方参考 Agent，只通过公开 API 模拟第三方接入
 - `POST /simulator/chat/stream`: 流式返回 simulator 输出
@@ -288,7 +288,7 @@ except Exception:
 
 推荐统一按照下面时序设计和调试：
 
-1. `GET /memories/context`
+1. `GET /memories/context` 获取 live 首页，必要时继续带 `before_id` 向前翻历史
 2. `POST /memories/search`
 3. 第三方 Agent 组装 prompt 并生成回答
 4. `POST /memories/turns`

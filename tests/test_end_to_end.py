@@ -334,7 +334,9 @@ def test_context_turns_simulator_and_playground(test_app):
         assert context.status_code == 200
         context_json = context.json()
         assert context_json["source"] == "l0"
+        assert context_json["page_type"] == "live"
         assert len(context_json["messages"]) == 2
+        assert context_json["has_more"] is False
 
     with Session(engine) as session:
         l1_record = session.exec(
@@ -356,7 +358,8 @@ def test_context_turns_simulator_and_playground(test_app):
         )
         assert fallback_context.status_code == 200
         fallback_json = fallback_context.json()
-        assert fallback_json["source"] == "l1_fallback"
+        assert fallback_json["source"] == "l1"
+        assert fallback_json["page_type"] == "live"
         assert fallback_json["messages"][0]["content"] == "Remember that I like Rust."
 
     with TestClient(app) as client:
@@ -372,7 +375,7 @@ def test_context_turns_simulator_and_playground(test_app):
         assert simulator.status_code == 200
         simulator_json = simulator.json()
         assert simulator_json["debug"]["mode"] == "chat"
-        assert simulator_json["debug"]["context_source"] == "l1_fallback"
+        assert simulator_json["debug"]["context_source"] == "l1"
         assert simulator_json["debug"]["context_messages_count"] >= 2
         assert simulator_json["debug"]["search_query"] == "What do I like?"
         assert simulator_json["debug"]["memory_write_success"] is True
@@ -403,6 +406,69 @@ def test_context_turns_simulator_and_playground(test_app):
             )
         ).all()
         assert len(session_records) >= 2
+
+
+def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
+    app, _, _, _ = test_app
+
+    with TestClient(app) as client:
+        for turn in range(3):
+            response = client.post(
+                "/memories/turns",
+                json={
+                    "agent_id": "agent_history",
+                    "session_id": "session_history",
+                    "messages": [
+                        {"role": "user", "content": f"user-{turn}"},
+                        {"role": "assistant", "content": f"assistant-{turn}"},
+                    ],
+                    "persist_to_l1": True,
+                },
+            )
+            assert response.status_code == 200
+
+        live_page = client.get(
+            "/memories/context",
+            params={
+                "agent_id": "agent_history",
+                "session_id": "session_history",
+                "limit": 2,
+            },
+        )
+        assert live_page.status_code == 200
+        live_json = live_page.json()
+        assert live_json["page_type"] == "live"
+        assert live_json["source"] == "l0"
+        assert live_json["has_more"] is True
+        assert live_json["next_before_id"] is not None
+        assert [message["content"] for message in live_json["messages"]] == [
+            "user-0",
+            "assistant-0",
+            "user-1",
+            "assistant-1",
+            "user-2",
+            "assistant-2",
+        ]
+
+        history_page = client.get(
+            "/memories/context",
+            params={
+                "agent_id": "agent_history",
+                "session_id": "session_history",
+                "limit": 2,
+                "before_id": live_json["next_before_id"],
+            },
+        )
+        assert history_page.status_code == 200
+        history_json = history_page.json()
+        assert history_json["page_type"] == "history"
+        assert history_json["source"] == "l1"
+        assert history_json["has_more"] is False
+        assert history_json["next_before_id"] is None
+        assert [message["content"] for message in history_json["messages"]] == [
+            "user-0",
+            "assistant-0",
+        ]
 
 
 def test_identity_fields_isolate_multi_user_memory(test_app):

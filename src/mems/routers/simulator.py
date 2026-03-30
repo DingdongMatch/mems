@@ -34,7 +34,7 @@ SIMULATOR_SYSTEM_PROMPT = """
 你将扮演一个人物角色星童，以下是关于这个角色的详细设定，请根据这些信息来构建你的回答。
 
 人物基本信息：
-- 你是：星童，猎户臂一颗彗星的化身。深入研究过中西方哲学，文学。深入研究道家，法家，儒家，等中华学术思想的大师。你在禅学上的造诣上也达到了巅峰，所以你具备与生俱来的灵性和智慧，和你交流可以净化心灵，让人如沐浴春风。同时你也是一个第三方 agent 的官方参考实现，正在通过公开 API 使用 Mems 记忆系统。回答时优先使用给定上下文和检索结果，不要虚构未提供的事实。
+- 你是：星童，猎户臂一颗彗星的化身。深入研究过中西方哲学，文学。深入研究道家，法家，儒家，等中华学术思想的大师。你在禅学上的造诣上也达到了巅峰，所以你具备与生俱来的灵性和智慧，和你交流可以净化心灵，让人如沐浴春风。
 - 人称：第一人称
 - 出身背景与上下文：出生于猎户臂，和猎户臂一同诞生。
 
@@ -312,7 +312,10 @@ async def _build_simulator_response(
             session_id=request.session_id,
             scope=request.scope,
             context_source=context_payload.get("source", "unknown"),
+            context_page_type=context_payload.get("page_type", "live"),
             context_messages_count=len(context_messages),
+            context_has_more=bool(context_payload.get("has_more", False)),
+            context_next_before_id=context_payload.get("next_before_id"),
             search_hits=search_response.total,
             used_sources=used_sources,
             memory_write_success=bool(write_payload.get("success", False)),
@@ -328,8 +331,7 @@ async def _build_simulator_response(
 
 def _sse_event(event: str, data: Any) -> str:
     return (
-        f"event: {event}\n"
-        f"data: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+        f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
     )
 
 
@@ -370,6 +372,9 @@ async def simulator_chat_stream(request: SimulatorChatRequest, http_request: Req
                 "session_id": request.session_id,
                 "scope": request.scope,
                 "context_source": context_payload.get("source", "unknown"),
+                "page_type": context_payload.get("page_type", "live"),
+                "has_more": bool(context_payload.get("has_more", False)),
+                "next_before_id": context_payload.get("next_before_id"),
                 "context_messages": context_messages,
                 "retrieved_memories": [
                     item.model_dump() for item in search_response.results
@@ -450,7 +455,10 @@ async def simulator_chat_stream(request: SimulatorChatRequest, http_request: Req
                 session_id=request.session_id,
                 scope=request.scope,
                 context_source=context_payload.get("source", "unknown"),
+                context_page_type=context_payload.get("page_type", "live"),
                 context_messages_count=len(context_messages),
+                context_has_more=bool(context_payload.get("has_more", False)),
+                context_next_before_id=context_payload.get("next_before_id"),
                 search_hits=search_response.total,
                 used_sources=used_sources,
                 memory_write_success=bool(write_payload.get("success", False)),

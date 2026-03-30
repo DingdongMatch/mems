@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 import inspect
 
 from fastapi import APIRouter
+from sqlalchemy import func
 from sqlmodel import Session, select
 
 from mems.config import settings
@@ -26,6 +27,12 @@ from mems.services.vector_service import get_vector_service
 router = APIRouter(prefix="/monitor", tags=["Monitor"])
 
 STALE_MEMORY_DAYS = 365
+
+
+def _count_rows(session: Session, statement) -> int:
+    return int(
+        session.exec(select(func.count()).select_from(statement.subquery())).one()
+    )
 
 
 @router.get("/status", response_model=MonitorStatusResponse)
@@ -74,53 +81,46 @@ async def monitor_status() -> MonitorStatusResponse:
         checks["scheduler"] = HealthCheckItem(status="unhealthy", detail=str(exc))
 
     with Session(engine) as session:
-        pending_distill = len(
-            session.exec(
-                select(MemsL1Episodic).where(MemsL1Episodic.is_distilled == False)  # noqa: E712
-            ).all()
+        pending_distill = _count_rows(
+            session,
+            select(MemsL1Episodic).where(MemsL1Episodic.is_distilled == False),  # noqa: E712
         )
         cutoff = datetime.now(timezone.utc) - timedelta(days=settings.ARCHIVE_DAYS)
-        pending_archive = len(
-            session.exec(
-                select(MemsL1Episodic).where(
-                    MemsL1Episodic.created_at < cutoff,
-                    MemsL1Episodic.is_archived == False,  # noqa: E712
-                )
-            ).all()
+        pending_archive = _count_rows(
+            session,
+            select(MemsL1Episodic).where(
+                MemsL1Episodic.created_at < cutoff,
+                MemsL1Episodic.is_archived == False,  # noqa: E712
+            ),
         )
-        profile_items = len(
-            session.exec(
-                select(MemsL2ProfileItem).where(MemsL2ProfileItem.status == "active")
-            ).all()
+        profile_items = _count_rows(
+            session,
+            select(MemsL2ProfileItem).where(MemsL2ProfileItem.status == "active"),
         )
-        fact_items = len(
-            session.exec(select(MemsL2Fact).where(MemsL2Fact.status == "active")).all()
+        fact_items = _count_rows(
+            session,
+            select(MemsL2Fact).where(MemsL2Fact.status == "active"),
         )
-        summary_items = len(session.exec(select(MemsL2Summary)).all())
-        conflict_count = len(session.exec(select(MemsL2ConflictLog)).all())
+        summary_items = _count_rows(session, select(MemsL2Summary))
+        conflict_count = _count_rows(session, select(MemsL2ConflictLog))
         stale_cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_MEMORY_DAYS)
-        stale_profile_items = len(
-            session.exec(
-                select(MemsL2ProfileItem).where(
-                    MemsL2ProfileItem.status == "active",
-                    MemsL2ProfileItem.last_verified_at < stale_cutoff,
-                )
-            ).all()
+        stale_profile_items = _count_rows(
+            session,
+            select(MemsL2ProfileItem).where(
+                MemsL2ProfileItem.status == "active",
+                MemsL2ProfileItem.last_verified_at < stale_cutoff,
+            ),
         )
-        stale_fact_items = len(
-            session.exec(
-                select(MemsL2Fact).where(
-                    MemsL2Fact.status == "active",
-                    MemsL2Fact.last_verified_at < stale_cutoff,
-                )
-            ).all()
+        stale_fact_items = _count_rows(
+            session,
+            select(MemsL2Fact).where(
+                MemsL2Fact.status == "active",
+                MemsL2Fact.last_verified_at < stale_cutoff,
+            ),
         )
-        stale_summary_items = len(
-            session.exec(
-                select(MemsL2Summary).where(
-                    MemsL2Summary.last_verified_at < stale_cutoff
-                )
-            ).all()
+        stale_summary_items = _count_rows(
+            session,
+            select(MemsL2Summary).where(MemsL2Summary.last_verified_at < stale_cutoff),
         )
 
     statuses = {item.status for item in checks.values()}
