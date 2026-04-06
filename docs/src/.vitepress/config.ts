@@ -3,6 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'Mems',
   description: 'A layered, self-distilling, century-scale memory system for AI agents.',
+  base: '/mems/',
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: {
