@@ -6,6 +6,8 @@ Mems is an industrial-grade memory hub solution for AI agents. Through a four-la
 
 [中文](README_zh.md)
 
+Docs: https://dingdongmatch.github.io/mems/
+
 ## Core Design Philosophy: Why Mems
 
 Unlike a single-layer vector database or basic RAG stack, Mems is designed to control memory entropy in long-running agents:
