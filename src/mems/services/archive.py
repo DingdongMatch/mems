@@ -16,6 +16,10 @@ class ArchiveService:
     """归档服务 - L1 → L3"""
 
     def __init__(self, session: Session):
+        """Bind the archive service to a database session.
+
+        将归档服务绑定到一个数据库会话。
+        """
         self.session = session
 
     async def archive(
@@ -26,7 +30,10 @@ class ArchiveService:
         scope: Optional[str] = None,
         days: int = 30,
     ) -> ArchiveResponse:
-        """执行归档"""
+        """Archive expired L1 records into an L3 JSONL batch.
+
+        将过期的 L1 记录归档到一批 L3 JSONL 文件中。
+        """
         cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
 
         query = select(MemsL1Episodic).where(
@@ -131,7 +138,10 @@ class ArchiveService:
 async def trigger_archive_automatically(
     agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """自动触发归档任务（供调度器调用）"""
+    """Run scheduled archive work for one agent or all agents.
+
+    为单个或全部 agent 执行调度触发的归档任务。
+    """
     import logging
     from mems.database import engine
 

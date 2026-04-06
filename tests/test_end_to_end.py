@@ -19,19 +19,23 @@ from mems.services.distill import DistillService
 
 
 def test_memory_pipeline_end_to_end(test_app):
+    """Verify the core write, search, archive, and distill pipeline.
+
+    验证核心写入、检索、归档与蒸馏流水线。
+    """
     app, engine, _, vector_service = test_app
 
     with TestClient(app) as client:
-        health = client.get("/health")
+        health = client.get("/v1/mems/health")
         assert health.status_code == 200
         assert health.json()["status"] == "healthy"
 
-        monitor = client.get("/monitor/status")
+        monitor = client.get("/v1/mems/status")
         assert monitor.status_code == 200
         assert monitor.json()["status"] == "healthy"
 
         write = client.post(
-            "/memories/write",
+            "/v1/mems/write",
             json={
                 "agent_id": "agent_test",
                 "session_id": "session_test",
@@ -51,7 +55,7 @@ def test_memory_pipeline_end_to_end(test_app):
         assert write.json()["persisted_to_l1"] is True
 
         search_before = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={"agent_id": "agent_test", "query": "Python", "top_k": 5},
         )
         assert search_before.status_code == 200
@@ -70,7 +74,7 @@ def test_memory_pipeline_end_to_end(test_app):
         session.commit()
 
     with TestClient(app) as client:
-        monitor_before_archive = client.get("/monitor/status")
+        monitor_before_archive = client.get("/v1/mems/status")
         assert monitor_before_archive.status_code == 200
         assert monitor_before_archive.json()["pipeline"]["pending_archive"] == 1
 
@@ -90,14 +94,14 @@ def test_memory_pipeline_end_to_end(test_app):
 
     with TestClient(app) as client:
         search_after_archive = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={"agent_id": "agent_test", "query": "Python", "top_k": 5},
         )
         assert search_after_archive.status_code == 200
         after_archive_results = search_after_archive.json()["results"]
         assert all(item["source"] != "l1_episodic" for item in after_archive_results)
 
-        monitor_after_archive = client.get("/monitor/status")
+        monitor_after_archive = client.get("/v1/mems/status")
         assert monitor_after_archive.status_code == 200
         assert monitor_after_archive.json()["pipeline"]["pending_archive"] == 0
 
@@ -141,7 +145,7 @@ def test_memory_pipeline_end_to_end(test_app):
 
     with TestClient(app) as client:
         search_after_distill = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={"agent_id": "agent_test", "query": "Python preference", "top_k": 5},
         )
         assert search_after_distill.status_code == 200
@@ -151,7 +155,7 @@ def test_memory_pipeline_end_to_end(test_app):
         assert distilled_results[0]["source"] == "l2_profile"
 
         summary_search = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={
                 "agent_id": "agent_test",
                 "query": "Give me a summary of recent focus",
@@ -163,7 +167,7 @@ def test_memory_pipeline_end_to_end(test_app):
         assert any(item["source"] == "l2_summary" for item in summary_results)
         assert summary_results[0]["source"] == "l2_summary"
 
-        monitor_after_distill = client.get("/monitor/status")
+        monitor_after_distill = client.get("/v1/mems/status")
         assert monitor_after_distill.status_code == 200
         pipeline = monitor_after_distill.json()["pipeline"]
         assert pipeline["pending_distill"] == 0
@@ -181,13 +185,25 @@ def test_memory_pipeline_end_to_end(test_app):
 def test_write_memory_keeps_l1_record_when_vector_sync_fails(
     test_app, monkeypatch: pytest.MonkeyPatch
 ):
+    """Ensure SQL persistence succeeds even when vector sync fails.
+
+    确保向量同步失败时，SQL 主记录仍然成功持久化。
+    """
     app, engine, _, _ = test_app
 
     class FailingVectorService:
         async def upsert(self, collection_name: str, points):
+            """Always fail vector upserts for resilience testing.
+
+            始终让向量写入失败，用于验证容错逻辑。
+            """
             raise RuntimeError("vector unavailable")
 
     async def get_failing_vector_service():
+        """Return the failing vector service used in this test.
+
+        返回本测试使用的失败向量服务。
+        """
         return FailingVectorService()
 
     monkeypatch.setattr(
@@ -196,7 +212,7 @@ def test_write_memory_keeps_l1_record_when_vector_sync_fails(
 
     with TestClient(app) as client:
         response = client.post(
-            "/memories/write",
+            "/v1/mems/write",
             json={
                 "agent_id": "agent_vector_fail",
                 "session_id": "session_vector_fail",
@@ -213,44 +229,14 @@ def test_write_memory_keeps_l1_record_when_vector_sync_fails(
         ).first()
         assert record is not None
         assert record.vector_status == "failed"
-        assert record.jsonl_status == "ready"
         assert "vector unavailable" in (record.last_sync_error or "")
 
 
-def test_write_memory_keeps_l1_record_when_jsonl_sync_fails(
-    test_app, monkeypatch: pytest.MonkeyPatch
-):
-    app, engine, _, _ = test_app
-
-    def failing_jsonl_write(self, agent_id: str, data, date=None):
-        raise RuntimeError("jsonl unavailable")
-
-    monkeypatch.setattr("mems.services.l0_sync.JsonlWriter.write", failing_jsonl_write)
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/memories/write",
-            json={
-                "agent_id": "agent_jsonl_fail",
-                "session_id": "session_jsonl_fail",
-                "messages": [{"role": "user", "content": "remember this too"}],
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["persisted_to_l1"] is True
-
-    with Session(engine) as session:
-        record = session.exec(
-            select(MemsL1Episodic).where(MemsL1Episodic.agent_id == "agent_jsonl_fail")
-        ).first()
-        assert record is not None
-        assert record.vector_status == "ready"
-        assert record.jsonl_status == "failed"
-        assert "jsonl unavailable" in (record.last_sync_error or "")
-
-
 def test_distill_reconciliation_supersedes_profile_value(test_app):
+    """Verify newer profile values supersede older active values.
+
+    验证较新的画像值会覆盖较旧的活跃值。
+    """
     _, engine, _, _ = test_app
 
     with Session(engine) as session:
@@ -304,12 +290,16 @@ def test_distill_reconciliation_supersedes_profile_value(test_app):
         assert len(conflict_logs) >= 1
 
 
-def test_context_turns_simulator_and_playground(test_app):
+def test_context_write_and_l1_fallback(test_app):
+    """Cover context reads, write endpoint behavior, and L1 fallback.
+
+    覆盖上下文读取、统一写入接口行为和 L1 回退逻辑。
+    """
     app, engine, redis_service, _ = test_app
 
     with TestClient(app) as client:
         turns = client.post(
-            "/memories/turns",
+            "/v1/mems/write",
             json={
                 "agent_id": "agent_chat",
                 "session_id": "session_chat",
@@ -317,14 +307,13 @@ def test_context_turns_simulator_and_playground(test_app):
                     {"role": "user", "content": "Remember that I like Rust."},
                     {"role": "assistant", "content": "Got it, you like Rust."},
                 ],
-                "persist_to_l1": True,
             },
         )
         assert turns.status_code == 200
         assert turns.json()["persisted_to_l1"] is True
 
         context = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "agent_id": "agent_chat",
                 "session_id": "session_chat",
@@ -349,7 +338,7 @@ def test_context_turns_simulator_and_playground(test_app):
 
     with TestClient(app) as client:
         fallback_context = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "agent_id": "agent_chat",
                 "session_id": "session_chat",
@@ -362,42 +351,6 @@ def test_context_turns_simulator_and_playground(test_app):
         assert fallback_json["page_type"] == "live"
         assert fallback_json["messages"][0]["content"] == "Remember that I like Rust."
 
-    with TestClient(app) as client:
-        simulator = client.post(
-            "/simulator/chat",
-            json={
-                "agent_id": "agent_chat",
-                "session_id": "session_chat",
-                "message": "What do I like?",
-                "top_k": 5,
-            },
-        )
-        assert simulator.status_code == 200
-        simulator_json = simulator.json()
-        assert simulator_json["debug"]["mode"] == "chat"
-        assert simulator_json["debug"]["context_source"] == "l1"
-        assert simulator_json["debug"]["context_messages_count"] >= 2
-        assert simulator_json["debug"]["search_query"] == "What do I like?"
-        assert simulator_json["debug"]["memory_write_success"] is True
-        assert len(simulator_json["retrieved_memories"]) >= 1
-
-        stream_response = client.post(
-            "/simulator/chat/stream",
-            json={
-                "agent_id": "agent_chat",
-                "session_id": "session_chat",
-                "message": "What do I like?",
-                "top_k": 5,
-            },
-        )
-        assert stream_response.status_code == 200
-        assert "event: token" in stream_response.text
-        assert "event: done" in stream_response.text
-
-        playground = client.get("/simulator/playground")
-        assert playground.status_code == 200
-        assert "Reference Agent Playground" in playground.text
-
     with Session(engine) as session:
         session_records = session.exec(
             select(MemsL1Episodic).where(
@@ -405,16 +358,20 @@ def test_context_turns_simulator_and_playground(test_app):
                 MemsL1Episodic.session_id == "session_chat",
             )
         ).all()
-        assert len(session_records) >= 2
+        assert len(session_records) == 1
 
 
 def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
+    """Verify live context keeps the tail while history pages older L1 data.
+
+    验证实时上下文保留尾部消息，历史分页读取更早 L1 数据。
+    """
     app, _, _, _ = test_app
 
     with TestClient(app) as client:
         for turn in range(3):
             response = client.post(
-                "/memories/turns",
+                "/v1/mems/write",
                 json={
                     "agent_id": "agent_history",
                     "session_id": "session_history",
@@ -422,13 +379,12 @@ def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
                         {"role": "user", "content": f"user-{turn}"},
                         {"role": "assistant", "content": f"assistant-{turn}"},
                     ],
-                    "persist_to_l1": True,
                 },
             )
             assert response.status_code == 200
 
         live_page = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "agent_id": "agent_history",
                 "session_id": "session_history",
@@ -451,7 +407,7 @@ def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
         ]
 
         history_page = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "agent_id": "agent_history",
                 "session_id": "session_history",
@@ -472,11 +428,15 @@ def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
 
 
 def test_identity_fields_isolate_multi_user_memory(test_app):
+    """Verify tenant, user, and scope isolate memory visibility.
+
+    验证 tenant、user 与 scope 字段能够隔离记忆可见性。
+    """
     app, engine, redis_service, _ = test_app
 
     with TestClient(app) as client:
         user_a = client.post(
-            "/memories/turns",
+            "/v1/mems/write",
             json={
                 "tenant_id": "tenant_1",
                 "user_id": "user_a",
@@ -490,7 +450,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
             },
         )
         user_b = client.post(
-            "/memories/turns",
+            "/v1/mems/write",
             json={
                 "tenant_id": "tenant_1",
                 "user_id": "user_b",
@@ -507,7 +467,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
         assert user_b.status_code == 200
 
         context_a = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "tenant_id": "tenant_1",
                 "user_id": "user_a",
@@ -517,7 +477,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
             },
         )
         context_b = client.get(
-            "/memories/context",
+            "/v1/mems/context",
             params={
                 "tenant_id": "tenant_1",
                 "user_id": "user_b",
@@ -534,7 +494,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
         assert "Python" not in context_b.text
 
         search_a = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={
                 "tenant_id": "tenant_1",
                 "user_id": "user_a",
@@ -545,7 +505,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
             },
         )
         search_b = client.post(
-            "/memories/search",
+            "/v1/mems/query",
             json={
                 "tenant_id": "tenant_1",
                 "user_id": "user_b",

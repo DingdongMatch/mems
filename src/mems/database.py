@@ -14,13 +14,19 @@ engine = create_engine(
 
 
 def init_db() -> None:
-    """初始化数据库表"""
+    """Create database tables for all registered SQLModel models.
+
+    为所有已注册的 SQLModel 模型创建数据库表。
+    """
     import mems.models  # noqa: F401
 
     SQLModel.metadata.create_all(engine)
 
 
 def get_session() -> Generator[Session, None, None]:
-    """获取数据库会话"""
+    """Yield a database session for request or service usage.
+
+    提供一个可用于请求或服务逻辑的数据库会话。
+    """
     with Session(engine) as session:
         yield session

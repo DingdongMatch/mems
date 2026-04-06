@@ -10,6 +10,10 @@ _client: Optional[AsyncOpenAI] = None
 
 
 def get_llm_client() -> AsyncOpenAI:
+    """Create and cache the shared async LLM client.
+
+    创建并缓存共享的异步 LLM 客户端。
+    """
     global _client
     if _client is None:
         if not settings.OPENAI_API_KEY:
@@ -27,7 +31,10 @@ async def chat(
     model: Optional[str] = None,
     temperature: float = 0.7,
 ) -> str:
-    """Send a chat request to the LLM."""
+    """Send a non-streaming chat request to the configured LLM.
+
+    向配置好的 LLM 发送非流式聊天请求。
+    """
     client = get_llm_client()
     model = model or settings.OPENAI_MODEL
 
@@ -45,7 +52,10 @@ async def stream_chat(
     model: Optional[str] = None,
     temperature: float = 0.7,
 ) -> AsyncIterator[str]:
-    """Stream a chat response from the LLM."""
+    """Stream incremental chat deltas from the configured LLM.
+
+    从配置好的 LLM 流式返回增量聊天内容。
+    """
     client = get_llm_client()
     model = model or settings.OPENAI_MODEL
 

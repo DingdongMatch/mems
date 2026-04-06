@@ -19,6 +19,9 @@ dependencies = [
     "tenacity>=9.0.0",
     "apscheduler>=3.11.0",
     "openai>=1.0.0",
+    "datasets>=2.21.0",
+    "langchain-openai>=0.2.14",
+    "ragas>=0.2.10",
 ]
 
 [dependency-groups]

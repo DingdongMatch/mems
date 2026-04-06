@@ -29,8 +29,6 @@ def reset_sqlite_db() -> None:
 
 def reset_storage() -> None:
     for storage_path in [
-        settings.storage_l1_path,
-        settings.storage_l2_path,
         settings.storage_l3_path,
     ]:
         path = ROOT / storage_path

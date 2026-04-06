@@ -42,6 +42,11 @@ dmypy.json
 *.log
 nohup.out
 
+# Docs site
+docs/node_modules/
+docs/src/.vitepress/cache/
+docs/src/.vitepress/dist/
+
 # IDE
 .idea/
 .vscode/

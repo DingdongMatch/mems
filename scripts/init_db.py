@@ -3,6 +3,7 @@
 数据库初始化脚本
 创建所有表结构
 """
+
 import sys
 from pathlib import Path
 
@@ -17,8 +18,6 @@ def main():
     init_db()
     print(f"Database initialized: {settings.DATABASE_URL}")
 
-    Path(settings.storage_l1_path).mkdir(parents=True, exist_ok=True)
-    Path(settings.storage_l2_path).mkdir(parents=True, exist_ok=True)
     Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
     print("Storage directories created.")
 

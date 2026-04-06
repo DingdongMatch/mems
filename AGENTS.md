@@ -6,7 +6,7 @@
 
 ## 1. 项目概述
 
-**Mems** 是一个支持多 Agent 隔离、长周期（100年级）的分层记忆系统，面向第三方 Agent 提供清晰的公开 memory API。
+**Mems** 是一套定位工业级的 AI Agent 记忆中枢方案。它通过四层冷热解耦架构，为智能体提供具备人格一致性、低成本检索和结构化进化的记忆基座，并面向第三方 Agent 提供清晰的公开 memory API。
 
 ### 核心架构
 
@@ -33,31 +33,33 @@
 
 ```
 src/mems/
-├── main.py              # FastAPI 入口 + lifespan + 调度器初始化
-├── config.py            # pydantic-settings 配置（从 .env 读取）
-├── models.py            # SQLModel 数据库模型
-├── schemas/            # Pydantic 请求/响应模型
-├── database.py          # SQLModel engine + init_db()
-├── dependencies.py      # FastAPI 依赖注入
+├── main.py               # FastAPI 入口 + lifespan + OpenAPI 描述
+├── config.py             # pydantic-settings 配置（从 .env 读取）
+├── models.py             # SQLModel 数据库模型
+├── schemas/              # Pydantic 请求/响应模型
+├── database.py           # SQLModel engine + init_db()
+├── dependencies.py       # FastAPI 依赖注入
 │
 ├── services/
-│   ├── scheduler.py     # APScheduler 调度服务（单例）
-│   ├── redis_service.py # Redis L0 服务（单例）
-│   ├── l0_sync.py      # L0→L1 同步函数
-│   ├── vector_service.py # Qdrant 官方 Async SDK 封装
-│   ├── embedding.py     # Embedding 抽象层（策略模式）
-│   ├── llm_client.py    # OpenAI-compatible LLM 客户端
-│   ├── distill.py       # L1→L2 蒸馏服务
-│   ├── archive.py      # L1→L3 归档服务
-│   └── jsonl_utils.py  # JSONL 读写工具
-│
-├── static/
-│   └── simulator_playground.html # Simulator 可视化调试页
+│   ├── scheduler.py      # APScheduler 调度服务（单例）
+│   ├── redis_service.py  # Redis L0 服务（单例）
+│   ├── l0_sync.py        # L0→L1 同步函数
+│   ├── vector_service.py # Qdrant Async SDK 封装
+│   ├── embedding.py      # Embedding 抽象层
+│   ├── llm_client.py     # OpenAI-compatible LLM 客户端
+│   ├── distill.py        # L1→L2 蒸馏服务
+│   ├── archive.py        # L1→L3 归档服务
+│   └── jsonl_utils.py    # JSONL 读写工具
 │
 └── routers/
-    ├── memories.py     # /memories/write + /memories/turns + /memories/context + /memories/search
-    ├── simulator.py    # /simulator/chat + /simulator/chat/stream + /simulator/playground
-    └── monitor.py      # /monitor/status
+    └── memories.py       # /v1/mems/* 公开接口
+
+docs/
+├── package.json          # VitePress 文档站脚本
+└── src/
+    ├── .vitepress/       # 文档站配置与主题
+    ├── en/               # 英文文档
+    └── zh/               # 中文文档
 ```
 
 ---
@@ -86,13 +88,17 @@ async def create_example(session: Session = Depends(get_session)):
 
 ### 3.1.1 当前公开 API 约定
 
-- `POST /memories/write`: 写入工作记忆快照
-- `POST /memories/turns`: 按 turn 追加会话消息，适合第三方 Agent 接入
-- `GET /memories/context`: 获取当前 `session_id` 的 live 首页，并可通过 `before_id` 分页读取更早的 L1 历史
-- `POST /memories/search`: 做长期语义检索
-- `POST /simulator/chat`: 官方参考 Agent，只通过公开 API 模拟第三方接入
-- `POST /simulator/chat/stream`: 流式返回 simulator 输出
-- `GET /simulator/playground`: 浏览器调试页，展示聊天、prompt、context、search trace
+- `POST /v1/mems/write`: 按 turn 追加会话消息，适合第三方 Agent 接入
+- `POST /v1/mems/query`: 做长期语义检索
+- `GET /v1/mems/context`: 获取当前 `session_id` 的 live 首页，并可通过 `before_id` 分页读取更早的 L1 历史
+- `GET /v1/mems/status`: 查看系统与流水线状态
+- `GET /v1/mems/health`: 轻量健康检查
+
+推荐对外接入流与文案统一遵循：
+
+- `Context -> Query -> Write`
+- 对外表述优先与 `README.md`、`README_zh.md`、Swagger、文档站保持一致
+- 如果修改公开 API、首页文案或系统定位，需同步检查 README、`src/mems/main.py` 的 OpenAPI 描述，以及 `docs/src/` 文档站内容
 
 ### 3.1.2 Memory Identity Model
 
@@ -203,7 +209,7 @@ results = await vector_service.search("collection_name", query_vector, filters={
 
 ### 5.1 L0→L1 自动双写
 
-用户调用 `/memories/write` 或 `/memories/turns` 时，可自动同步到 L1。
+用户调用 `/v1/mems/write` 时，可自动同步到 L1。
 
 ### 5.2 蒸馏任务
 
@@ -288,12 +294,10 @@ except Exception:
 
 推荐统一按照下面时序设计和调试：
 
-1. `GET /memories/context` 获取 live 首页，必要时继续带 `before_id` 向前翻历史
-2. `POST /memories/search`
+1. `GET /v1/mems/context` 获取 live 首页，必要时继续带 `before_id` 向前翻历史
+2. `POST /v1/mems/query`
 3. 第三方 Agent 组装 prompt 并生成回答
-4. `POST /memories/turns`
-
-`/simulator/chat` 就是这条时序的官方参考实现，不能绕过公开 API 直接调用内部 service。
+4. `POST /v1/mems/write`
 
 ---
 
@@ -308,6 +312,9 @@ uv run ruff check src/
 
 # 类型检查
 uv run mypy src/
+
+# 文档站构建检查
+cd docs && npm run build
 ```
 
 ---
@@ -319,7 +326,7 @@ uv run mypy src/
 uv run python -m mems.main
 
 # 或
-uvicorn src.mems.main:app --reload --port 8000
+uvicorn mems.main:app --reload --port 8210
 ```
 
 ---
@@ -343,7 +350,7 @@ uvicorn src.mems.main:app --reload --port 8000
 
 | 服务 | 端口 | 说明 |
 |------|------|------|
-| Mems API | 8000 | FastAPI 主服务 |
+| Mems API | 8210 | FastAPI 主服务 |
 | MCP Server | 8210 | MCP 协议服务 (预留) |
 | Qdrant | 6333 | 向量数据库 |
 | Redis | 6379 | L0 工作记忆 |
@@ -356,4 +363,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) file for 
 
 ---
 
-*最后更新: 2026-03-23*
+*最后更新: 2026-04-06*

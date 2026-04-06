@@ -25,7 +25,6 @@ from mems.schemas import (
     DistillResponse,
 )
 from mems.services.embedding import EmbeddingProvider
-from mems.services.jsonl_utils import JsonlWriter
 from mems.services.llm_client import chat as llm_chat
 from mems.services.vector_service import get_vector_service
 
@@ -91,13 +90,25 @@ class DistillService:
     """记忆蒸馏服务 - L1 → L2"""
 
     def __init__(self, session: Session):
+        """Bind the distillation service to a database session.
+
+        将蒸馏服务绑定到一个数据库会话。
+        """
         self.session = session
 
     def _has_llm_client(self) -> bool:
+        """Check whether LLM credentials are available.
+
+        检查当前是否具备可用的 LLM 凭据。
+        """
         return bool(settings.OPENAI_API_KEY)
 
     @staticmethod
     def _identity_payload(l1: MemsL1Episodic) -> Dict[str, Any]:
+        """Extract reusable identity fields from an L1 record.
+
+        从 L1 记录中提取可复用的身份字段。
+        """
         return {
             "tenant_id": l1.tenant_id,
             "user_id": l1.user_id,
@@ -106,6 +117,10 @@ class DistillService:
         }
 
     def _build_existing_context(self, l1: MemsL1Episodic) -> Dict[str, Any]:
+        """Collect nearby L2 context to guide extraction and reconciliation.
+
+        收集关联的 L2 上下文，用于后续提取与对账。
+        """
         profile_items = self.session.exec(
             select(MemsL2ProfileItem).where(
                 MemsL2ProfileItem.tenant_id == l1.tenant_id,
@@ -156,6 +171,10 @@ class DistillService:
         }
 
     def _filter_record(self, l1: MemsL1Episodic) -> Optional[str]:
+        """Skip low-value L1 records before sending them to the LLM.
+
+        在调用 LLM 之前过滤低价值的 L1 记录。
+        """
         content = l1.content.strip()
         lowered = content.lower()
         noise_markers = ["你好", "谢谢", "thanks", "thank you", "收到", "ok", "好的"]
@@ -174,6 +193,10 @@ class DistillService:
         return None
 
     def _extract_json_payload(self, response: str) -> Dict[str, Any]:
+        """Extract the first JSON object from raw LLM output.
+
+        从原始 LLM 输出中提取第一个 JSON 对象。
+        """
         if not response:
             return {}
 
@@ -193,6 +216,10 @@ class DistillService:
         l1: MemsL1Episodic,
         existing_context: Dict[str, Any],
     ) -> DistillExtractionResult:
+        """Ask the LLM to extract candidate long-term memories.
+
+        调用 LLM 提取候选长期记忆结构。
+        """
         response = await llm_chat(
             messages=[
                 {
@@ -215,6 +242,10 @@ class DistillService:
         extracted: DistillExtractionResult,
         existing_context: Dict[str, Any],
     ) -> DistillExtractionResult:
+        """Ask the LLM to reconcile new candidates against existing L2 data.
+
+        调用 LLM 将新候选结果与现有 L2 数据进行对账。
+        """
         response = await llm_chat(
             messages=[
                 {
@@ -236,6 +267,10 @@ class DistillService:
         return DistillExtractionResult.model_validate(merged)
 
     def _append_source(self, existing_ids: list[int], source_id: int) -> list[int]:
+        """Append a source L1 id if it is not already present.
+
+        如果来源 L1 id 尚不存在，则将其追加进去。
+        """
         merged = list(existing_ids)
         if source_id not in merged:
             merged.append(source_id)
@@ -244,6 +279,10 @@ class DistillService:
     def _reconcile_profile_item(
         self, l1: MemsL1Episodic, update: DistillProfileUpdate, source_id: int
     ) -> tuple[int, int]:
+        """Merge one extracted profile item into L2 profile storage.
+
+        将单条提取出的画像信息合并到 L2 画像存储中。
+        """
         existing = self.session.exec(
             select(MemsL2ProfileItem).where(
                 MemsL2ProfileItem.tenant_id == l1.tenant_id,
@@ -309,6 +348,10 @@ class DistillService:
     def _reconcile_fact_item(
         self, l1: MemsL1Episodic, fact: DistillFactItem, source_id: int
     ) -> tuple[int, int]:
+        """Merge one extracted fact into L2 fact storage.
+
+        将单条提取出的事实信息合并到 L2 事实存储中。
+        """
         existing_exact = self.session.exec(
             select(MemsL2Fact).where(
                 MemsL2Fact.tenant_id == l1.tenant_id,
@@ -404,6 +447,10 @@ class DistillService:
     def _commit_event(
         self, l1: MemsL1Episodic, event: DistillEventItem, source_id: int
     ) -> int:
+        """Persist one extracted event into L2 event storage.
+
+        将单条提取出的事件写入 L2 事件存储。
+        """
         new_event = MemsL2Event(
             **self._identity_payload(l1),
             subject=event.subject,
@@ -423,6 +470,10 @@ class DistillService:
         source_id: int,
         embedding_service: Optional[EmbeddingProvider],
     ) -> int:
+        """Persist a long-term summary and sync its vector replica.
+
+        保存长期摘要，并同步其向量副本。
+        """
         if not summary.strip():
             return 0
 
@@ -485,7 +536,7 @@ class DistillService:
             summary_record.last_sync_error = None
             summary_record.last_sync_at = datetime.now(timezone.utc)
         except Exception as exc:
-            logger.error("Failed to sync L2 summary vector replica: %s", exc)
+            logger.error("Failed to sync L2 summary vector replica: %r", exc)
             summary_record.vector_status = "failed"
             summary_record.last_sync_error = f"vector: {exc}"
             summary_record.last_sync_at = datetime.now(timezone.utc)
@@ -499,6 +550,10 @@ class DistillService:
         force: bool = False,
         embedding_service: Optional[EmbeddingProvider] = None,
     ) -> DistillResponse:
+        """Distill a batch of L1 records into structured L2 memories.
+
+        将一批 L1 记录蒸馏为结构化的 L2 记忆。
+        """
         _ = embedding_service
         query = select(MemsL1Episodic).where(MemsL1Episodic.agent_id == agent_id)
         if not force:
@@ -529,7 +584,6 @@ class DistillService:
         created_count = 0
         updated_count = 0
         distilled_count = 0
-        audit_records = []
 
         for l1 in l1_records:
             if l1.id is None:
@@ -539,21 +593,6 @@ class DistillService:
             if filter_reason:
                 l1.is_distilled = True
                 self.session.add(l1)
-                audit_records.append(
-                    {
-                        "tenant_id": l1.tenant_id,
-                        "user_id": l1.user_id,
-                        "agent_id": l1.agent_id,
-                        "scope": l1.scope,
-                        "l1_id": l1.id,
-                        "discarded": [{"text": l1.content, "reason": filter_reason}],
-                        "profile_updates": [],
-                        "facts": [],
-                        "events": [],
-                        "conflict_candidates": [],
-                        "long_term_summary": "",
-                    }
-                )
                 distilled_count += 1
                 continue
 
@@ -611,22 +650,8 @@ class DistillService:
             created_count += local_created
             updated_count += local_updated
             distilled_count += 1
-            audit_records.append(
-                {
-                    "tenant_id": l1.tenant_id,
-                    "user_id": l1.user_id,
-                    "agent_id": l1.agent_id,
-                    "scope": l1.scope,
-                    "l1_id": l1.id,
-                    **reconciled.model_dump(),
-                }
-            )
 
         self.session.commit()
-
-        l2_writer = JsonlWriter(settings.storage_l2_path, "l2")
-        for record in audit_records:
-            l2_writer.write(agent_id, record)
 
         return DistillResponse(
             success=True,
@@ -638,7 +663,10 @@ class DistillService:
 
 
 def check_distill_threshold() -> int:
-    """检查是否达到蒸馏阈值，返回需要蒸馏的记录数"""
+    """Count pending L1 records that are eligible for distillation.
+
+    统计达到蒸馏条件、尚未处理的 L1 记录数量。
+    """
     with Session(engine) as session:
         records = session.exec(
             select(MemsL1Episodic).where(
@@ -652,7 +680,10 @@ def check_distill_threshold() -> int:
 async def trigger_distill_automatically(
     agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """自动触发蒸馏任务（供调度器调用）"""
+    """Run scheduled distillation for one agent or across all agents.
+
+    为单个或全部 agent 执行调度触发的蒸馏任务。
+    """
     try:
         from mems.services.embedding import get_embedding_service
 

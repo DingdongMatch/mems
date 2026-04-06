@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def normalize_sqlite_database_url(cls, value: str) -> str:
+        """Normalize relative SQLite URLs to absolute project paths.
+
+        将相对 SQLite 路径规范化为项目根目录下的绝对路径。
+        """
         if not isinstance(value, str):
             return value
         prefix = "sqlite:///"
@@ -64,7 +68,7 @@ class Settings(BaseSettings):
 
     # App
     APP_HOST: str = "0.0.0.0"
-    APP_PORT: int = 8000
+    APP_PORT: int = 8210
     LOG_LEVEL: str = "INFO"
 
     # Archive
@@ -80,21 +84,15 @@ class Settings(BaseSettings):
     ARCHIVE_CRON_HOUR: int = 3
     ARCHIVE_CRON_MINUTE: int = 0
 
-    # L0 -> L1 Auto Sync
-    L0_AUTO_SYNC_L1: bool = True
     L0_DEFAULT_TTL_SECONDS: int = 1800
 
     # Storage paths
     @property
-    def storage_l1_path(self) -> Path:
-        return PROJECT_ROOT / "storage/l1_raw"
-
-    @property
-    def storage_l2_path(self) -> Path:
-        return PROJECT_ROOT / "storage/l2_knowledge"
-
-    @property
     def storage_l3_path(self) -> Path:
+        """Return the configured L3 archive directory.
+
+        返回配置后的 L3 归档目录。
+        """
         return PROJECT_ROOT / self.ARCHIVE_STORAGE_PATH
 
 
@@ -102,4 +100,8 @@ settings = Settings()
 
 
 def get_settings() -> Settings:
+    """Expose the singleton settings object.
+
+    返回全局单例配置对象。
+    """
     return settings

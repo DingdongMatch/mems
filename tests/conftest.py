@@ -19,15 +19,27 @@ class FakeRedisClient:
     service: "FakeRedisService"
 
     async def ping(self) -> bool:
+        """Return a successful ping for monitor tests.
+
+        为监控测试返回成功的 ping 结果。
+        """
         return True
 
 
 class FakeRedisService:
     def __init__(self) -> None:
+        """Initialize the in-memory Redis replacement used in tests.
+
+        初始化测试环境使用的内存版 Redis 替身。
+        """
         self._store: dict[tuple[str | None, str | None, str | None, str, str], Any] = {}
         self._client = FakeRedisClient(self)
 
     async def get_client(self) -> FakeRedisClient:
+        """Return the fake Redis client object.
+
+        返回伪造的 Redis 客户端对象。
+        """
         return self._client
 
     async def write(
@@ -42,6 +54,10 @@ class FakeRedisService:
         temp_variables: dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
     ):
+        """Store one L0 snapshot in the in-memory test backend.
+
+        在测试用内存后端中保存一条 L0 快照。
+        """
         from mems.schemas import MemsL0Working
 
         l0 = MemsL0Working(
@@ -66,6 +82,10 @@ class FakeRedisService:
         user_id: str | None = None,
         scope: str | None = None,
     ):
+        """Read one L0 snapshot from the in-memory test backend.
+
+        从测试用内存后端读取一条 L0 快照。
+        """
         return self._store.get((tenant_id, user_id, scope, agent_id, session_id))
 
     async def delete(
@@ -76,6 +96,10 @@ class FakeRedisService:
         user_id: str | None = None,
         scope: str | None = None,
     ) -> bool:
+        """Delete one L0 snapshot from the in-memory test backend.
+
+        从测试用内存后端删除一条 L0 快照。
+        """
         return (
             self._store.pop((tenant_id, user_id, scope, agent_id, session_id), None)
             is not None
@@ -94,6 +118,10 @@ class FakeRedisService:
         active_plan: str | None = None,
         temp_variables: dict[str, Any] | None = None,
     ):
+        """Append multiple messages in the in-memory test backend.
+
+        在测试用内存后端中追加多条消息。
+        """
         existing = self._store.get((tenant_id, user_id, scope, agent_id, session_id))
         if existing is None:
             return await self.write(
@@ -129,6 +157,10 @@ class FakeRedisService:
 
 class FakeEmbeddingService:
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        """Return deterministic vectors derived from text length.
+
+        根据文本长度返回可预测的测试向量。
+        """
         vectors = []
         for text in texts:
             score = float(len(text))
@@ -138,12 +170,24 @@ class FakeEmbeddingService:
 
 class FakeVectorService:
     def __init__(self) -> None:
+        """Initialize the in-memory vector collection store.
+
+        初始化内存版向量集合存储。
+        """
         self.collections: dict[str, dict[str, dict[str, Any]]] = {}
 
     async def get_collections(self) -> list[str]:
+        """List fake vector collection names.
+
+        列出伪造向量集合名称。
+        """
         return list(self.collections.keys())
 
     async def upsert(self, collection_name: str, points: list[dict[str, Any]]) -> bool:
+        """Insert or update fake vector points in memory.
+
+        在内存中插入或更新伪造向量点。
+        """
         collection = self.collections.setdefault(collection_name, {})
         for point in points:
             collection[str(point["id"])] = {
@@ -161,6 +205,10 @@ class FakeVectorService:
         filter_agent_id: str | None = None,
         filters: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
+        """Run a simple deterministic search over fake vectors.
+
+        对伪造向量执行一个简单且确定性的搜索。
+        """
         collection = self.collections.get(collection_name, {})
         results = []
         for point in collection.values():
@@ -181,6 +229,10 @@ class FakeVectorService:
 
 @pytest.fixture
 def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Build an isolated FastAPI app with fake infra dependencies.
+
+    构建一个使用伪造基础设施依赖的隔离 FastAPI 测试应用。
+    """
     db_path = tmp_path / "test.db"
     engine = create_engine(
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
@@ -188,6 +240,10 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     SQLModel.metadata.create_all(engine)
 
     def override_get_session():
+        """Yield sessions bound to the temporary test database.
+
+        提供绑定到临时测试数据库的会话。
+        """
         with Session(engine) as session:
             yield session
 
@@ -196,12 +252,24 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     embedding_service = FakeEmbeddingService()
 
     async def get_fake_redis_service():
+        """Return the fake Redis service singleton for tests.
+
+        返回测试环境中的伪造 Redis 服务单例。
+        """
         return redis_service
 
     async def get_fake_vector_service():
+        """Return the fake vector service singleton for tests.
+
+        返回测试环境中的伪造向量服务单例。
+        """
         return vector_service
 
     async def get_fake_embedding_service():
+        """Return the fake embedding service singleton for tests.
+
+        返回测试环境中的伪造 embedding 服务单例。
+        """
         return embedding_service
 
     async def fake_llm_chat(
@@ -209,6 +277,10 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         model: str | None = None,
         temperature: float = 0.7,
     ) -> str:
+        """Return deterministic extraction JSON for distillation tests.
+
+        为蒸馏测试返回确定性的提取结果 JSON。
+        """
         _ = (model, temperature)
         content = messages[-1]["content"]
         if "New Candidates:" in content:
@@ -291,9 +363,6 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "mems.routers.memories.get_vector_service", get_fake_vector_service
     )
     monkeypatch.setattr(
-        "mems.routers.monitor.get_vector_service", get_fake_vector_service
-    )
-    monkeypatch.setattr(
         "mems.services.l0_sync.get_vector_service", get_fake_vector_service
     )
     monkeypatch.setattr(
@@ -309,7 +378,7 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("mems.services.distill.llm_chat", fake_llm_chat)
     monkeypatch.setattr("mems.services.distill.engine", engine)
-    monkeypatch.setattr("mems.routers.monitor.engine", engine)
+    monkeypatch.setattr("mems.routers.memories.engine", engine)
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_redis_service] = get_fake_redis_service

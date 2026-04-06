@@ -10,9 +10,17 @@ class RedisService:
     """Redis L0 工作记忆服务"""
 
     def __init__(self):
+        """Initialize the lazy Redis client holder.
+
+        初始化延迟创建的 Redis 客户端容器。
+        """
         self._client: Optional[redis.Redis] = None
 
     async def get_client(self) -> redis.Redis:
+        """Create and cache the async Redis client on first use.
+
+        首次使用时创建并缓存异步 Redis 客户端。
+        """
         if self._client is None:
             self._client = redis.Redis(
                 host=settings.REDIS_HOST,
@@ -31,6 +39,10 @@ class RedisService:
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
     ) -> str:
+        """Build the Redis key from memory identity fields.
+
+        根据记忆身份字段构造 Redis 键。
+        """
         tenant_part = tenant_id or "_"
         user_part = user_id or "_"
         scope_part = scope or "_"
@@ -48,7 +60,10 @@ class RedisService:
         temp_variables: Dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
     ) -> MemsL0Working:
-        """写入 L0 工作记忆"""
+        """Write the current working-memory snapshot into Redis.
+
+        将当前工作记忆快照写入 Redis。
+        """
         client = await self.get_client()
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
 
@@ -80,7 +95,10 @@ class RedisService:
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
     ) -> Optional[MemsL0Working]:
-        """读取 L0 工作记忆"""
+        """Read a working-memory snapshot from Redis.
+
+        从 Redis 读取工作记忆快照。
+        """
         client = await self.get_client()
         key = self._key(agent_id, session_id, tenant_id, user_id, scope)
         data = await client.get(key)
@@ -97,7 +115,10 @@ class RedisService:
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
     ) -> bool:
-        """删除 L0 工作记忆"""
+        """Delete a working-memory snapshot from Redis.
+
+        从 Redis 删除工作记忆快照。
+        """
         client = await self.get_client()
         key = self._key(agent_id, session_id, tenant_id, user_id, scope)
         result = await client.delete(key)
@@ -113,7 +134,10 @@ class RedisService:
         scope: Optional[str] = None,
         max_buffer_size: int = 10,
     ) -> Optional[MemsL0Working]:
-        """追加消息到缓冲区"""
+        """Append one message to an existing live buffer.
+
+        向现有实时缓冲区追加一条消息。
+        """
         l0 = await self.read(
             agent_id,
             session_id,
@@ -153,7 +177,10 @@ class RedisService:
         active_plan: Optional[str] = None,
         temp_variables: Dict[str, Any] | None = None,
     ) -> MemsL0Working:
-        """追加多条消息到缓冲区，不存在则创建新会话。"""
+        """Append multiple messages and create the session if needed.
+
+        追加多条消息；若会话不存在则自动创建。
+        """
         existing = await self.read(
             agent_id,
             session_id,
@@ -202,6 +229,10 @@ class RedisService:
         )
 
     async def close(self):
+        """Close and clear the cached Redis client.
+
+        关闭并清理已缓存的 Redis 客户端。
+        """
         if self._client:
             await self._client.close()
             self._client = None
@@ -211,4 +242,8 @@ redis_service = RedisService()
 
 
 async def get_redis_service() -> RedisService:
+    """Return the module-level Redis service singleton.
+
+    返回模块级 Redis 服务单例。
+    """
     return redis_service
