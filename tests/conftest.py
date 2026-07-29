@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from mems.database import get_session
 from mems.main import app
 from mems.services.redis_service import get_redis_service
+from mems.services.vector_service import get_vector_service
 
 
 @dataclass
@@ -32,7 +33,9 @@ class FakeRedisService:
 
         初始化测试环境使用的内存版 Redis 替身。
         """
-        self._store: dict[tuple[str | None, str | None, str | None, str, str], Any] = {}
+        self._store: dict[
+            tuple[str | None, str | None, str | None, str, str | None], Any
+        ] = {}
         self._client = FakeRedisClient(self)
 
     async def get_client(self) -> FakeRedisClient:
@@ -47,11 +50,10 @@ class FakeRedisService:
         tenant_id: str | None,
         user_id: str | None,
         agent_id: str,
-        session_id: str,
+        session_id: str | None,
         messages: list[dict[str, str]],
+        content: str | None = None,
         scope: str | None = None,
-        active_plan: str | None = None,
-        temp_variables: dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
     ):
         """Store one L0 snapshot in the in-memory test backend.
@@ -66,9 +68,8 @@ class FakeRedisService:
             agent_id=agent_id,
             session_id=session_id,
             scope=scope,
+            content=content,
             short_term_buffer=messages,
-            active_plan=active_plan,
-            temp_variables=temp_variables or {},
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         )
         self._store[(tenant_id, user_id, scope, agent_id, session_id)] = l0
@@ -77,7 +78,7 @@ class FakeRedisService:
     async def read(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: str | None = None,
         tenant_id: str | None = None,
         user_id: str | None = None,
         scope: str | None = None,
@@ -91,7 +92,7 @@ class FakeRedisService:
     async def delete(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: str | None = None,
         tenant_id: str | None = None,
         user_id: str | None = None,
         scope: str | None = None,
@@ -110,13 +111,12 @@ class FakeRedisService:
         tenant_id: str | None,
         user_id: str | None,
         agent_id: str,
-        session_id: str,
+        session_id: str | None,
         messages: list[dict[str, str]],
+        content: str | None = None,
         ttl_seconds: int = 1800,
         max_buffer_size: int = 10,
         scope: str | None = None,
-        active_plan: str | None = None,
-        temp_variables: dict[str, Any] | None = None,
     ):
         """Append multiple messages in the in-memory test backend.
 
@@ -130,15 +130,10 @@ class FakeRedisService:
                 agent_id=agent_id,
                 session_id=session_id,
                 messages=messages[-max_buffer_size:],
+                content=content,
                 scope=scope,
-                active_plan=active_plan,
-                temp_variables=temp_variables,
                 ttl_seconds=ttl_seconds,
             )
-
-        merged_variables = dict(existing.temp_variables)
-        if temp_variables:
-            merged_variables.update(temp_variables)
 
         return await self.write(
             tenant_id=tenant_id,
@@ -146,11 +141,8 @@ class FakeRedisService:
             agent_id=agent_id,
             session_id=session_id,
             messages=(existing.short_term_buffer + messages)[-max_buffer_size:],
+            content=content if content is not None else existing.content,
             scope=scope if scope is not None else existing.scope,
-            active_plan=active_plan
-            if active_plan is not None
-            else existing.active_plan,
-            temp_variables=merged_variables,
             ttl_seconds=ttl_seconds,
         )
 
@@ -378,10 +370,10 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr("mems.services.distill.llm_chat", fake_llm_chat)
     monkeypatch.setattr("mems.services.distill.engine", engine)
-    monkeypatch.setattr("mems.routers.memories.engine", engine)
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_redis_service] = get_fake_redis_service
+    app.dependency_overrides[get_vector_service] = get_fake_vector_service
 
     try:
         yield app, engine, redis_service, vector_service

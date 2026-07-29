@@ -46,9 +46,6 @@ def test_memory_pipeline_end_to_end(test_app):
                     },
                     {"role": "assistant", "content": "Got it."},
                 ],
-                "active_plan": "verify pipeline",
-                "temp_variables": {"case": "pytest"},
-                "metadata": {"source": "test"},
             },
         )
         assert write.status_code == 200
@@ -290,10 +287,10 @@ def test_distill_reconciliation_supersedes_profile_value(test_app):
         assert len(conflict_logs) >= 1
 
 
-def test_context_write_and_l1_fallback(test_app):
-    """Cover context reads, write endpoint behavior, and L1 fallback.
+def test_write_persists_l1_messages_json(test_app):
+    """Cover write endpoint behavior and structured L1 source messages.
 
-    覆盖上下文读取、统一写入接口行为和 L1 回退逻辑。
+    覆盖写入接口行为和 L1 结构化来源消息。
     """
     app, engine, redis_service, _ = test_app
 
@@ -310,46 +307,20 @@ def test_context_write_and_l1_fallback(test_app):
             },
         )
         assert turns.status_code == 200
-        assert turns.json()["persisted_to_l1"] is True
-
-        context = client.get(
-            "/v1/mems/context",
-            params={
-                "agent_id": "agent_chat",
-                "session_id": "session_chat",
-                "limit": 10,
-            },
-        )
-        assert context.status_code == 200
-        context_json = context.json()
-        assert context_json["source"] == "l0"
-        assert context_json["page_type"] == "live"
-        assert len(context_json["messages"]) == 2
-        assert context_json["has_more"] is False
+        turns_json = turns.json()
+        assert turns_json["persisted_to_l1"] is True
+        assert turns_json["messages"][0]["role"] == "user"
+        assert "Rust" in turns_json["content"]
 
     with Session(engine) as session:
         l1_record = session.exec(
             select(MemsL1Episodic).where(MemsL1Episodic.agent_id == "agent_chat")
         ).first()
         assert l1_record is not None
-        assert l1_record.metadata_json["messages"][0]["role"] == "user"
+        assert l1_record.messages_json[0]["role"] == "user"
+        assert "Rust" in l1_record.content
 
-    redis_service._store.pop((None, None, None, "agent_chat", "session_chat"), None)
-
-    with TestClient(app) as client:
-        fallback_context = client.get(
-            "/v1/mems/context",
-            params={
-                "agent_id": "agent_chat",
-                "session_id": "session_chat",
-                "limit": 10,
-            },
-        )
-        assert fallback_context.status_code == 200
-        fallback_json = fallback_context.json()
-        assert fallback_json["source"] == "l1"
-        assert fallback_json["page_type"] == "live"
-        assert fallback_json["messages"][0]["content"] == "Remember that I like Rust."
+    assert redis_service._store.get((None, None, None, "agent_chat", "session_chat"))
 
     with Session(engine) as session:
         session_records = session.exec(
@@ -361,70 +332,19 @@ def test_context_write_and_l1_fallback(test_app):
         assert len(session_records) == 1
 
 
-def test_context_history_paginates_l1_records_and_keeps_live_tail(test_app):
-    """Verify live context keeps the tail while history pages older L1 data.
+def test_context_endpoint_is_not_exposed(test_app):
+    """Verify Mems no longer exposes context assembly.
 
-    验证实时上下文保留尾部消息，历史分页读取更早 L1 数据。
+    验证 Mems 不再暴露上下文组装接口。
     """
     app, _, _, _ = test_app
 
     with TestClient(app) as client:
-        for turn in range(3):
-            response = client.post(
-                "/v1/mems/write",
-                json={
-                    "agent_id": "agent_history",
-                    "session_id": "session_history",
-                    "messages": [
-                        {"role": "user", "content": f"user-{turn}"},
-                        {"role": "assistant", "content": f"assistant-{turn}"},
-                    ],
-                },
-            )
-            assert response.status_code == 200
-
-        live_page = client.get(
+        context = client.get(
             "/v1/mems/context",
-            params={
-                "agent_id": "agent_history",
-                "session_id": "session_history",
-                "limit": 2,
-            },
+            params={"agent_id": "agent_history", "session_id": "session_history"},
         )
-        assert live_page.status_code == 200
-        live_json = live_page.json()
-        assert live_json["page_type"] == "live"
-        assert live_json["source"] == "l0"
-        assert live_json["has_more"] is True
-        assert live_json["next_before_id"] is not None
-        assert [message["content"] for message in live_json["messages"]] == [
-            "user-0",
-            "assistant-0",
-            "user-1",
-            "assistant-1",
-            "user-2",
-            "assistant-2",
-        ]
-
-        history_page = client.get(
-            "/v1/mems/context",
-            params={
-                "agent_id": "agent_history",
-                "session_id": "session_history",
-                "limit": 2,
-                "before_id": live_json["next_before_id"],
-            },
-        )
-        assert history_page.status_code == 200
-        history_json = history_page.json()
-        assert history_json["page_type"] == "history"
-        assert history_json["source"] == "l1"
-        assert history_json["has_more"] is False
-        assert history_json["next_before_id"] is None
-        assert [message["content"] for message in history_json["messages"]] == [
-            "user-0",
-            "assistant-0",
-        ]
+        assert context.status_code == 404
 
 
 def test_identity_fields_isolate_multi_user_memory(test_app):
@@ -465,33 +385,6 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
         )
         assert user_a.status_code == 200
         assert user_b.status_code == 200
-
-        context_a = client.get(
-            "/v1/mems/context",
-            params={
-                "tenant_id": "tenant_1",
-                "user_id": "user_a",
-                "agent_id": "support_agent",
-                "session_id": "session_shared",
-                "scope": "private",
-            },
-        )
-        context_b = client.get(
-            "/v1/mems/context",
-            params={
-                "tenant_id": "tenant_1",
-                "user_id": "user_b",
-                "agent_id": "support_agent",
-                "session_id": "session_shared",
-                "scope": "private",
-            },
-        )
-        assert context_a.status_code == 200
-        assert context_b.status_code == 200
-        assert "Python" in context_a.text
-        assert "Rust" not in context_a.text
-        assert "Rust" in context_b.text
-        assert "Python" not in context_b.text
 
         search_a = client.post(
             "/v1/mems/query",

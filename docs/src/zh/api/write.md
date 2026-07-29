@@ -1,17 +1,18 @@
-# `POST /v1/mems/write`
+# `POST /v1/mems/write` — 写入记忆
 
-按 turn 追加 user / assistant 消息，并把新增消息持久化到 L0 / L1。
+将记忆内容写入系统。Mems 只存储值得记住的东西 — 原始对话消息或直接记忆文本 — 运行时状态由调用方自行管理。
 
 ## 支持字段
 
+- `content`
 - `messages`
 - `ttl_seconds`
-- `active_plan`
-- `temp_variables`
-- `metadata`
+- `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope`
 
 ## 行为说明
 
-- L0 中的 `short_term_buffer` 采用有限滑窗
-- 同步到 L1 时只持久化本次新增消息
-- 成功后会返回是否已写入 L1 以及对应 `l1_id`
+- `content` 和 `messages` 至少提供一个
+- 如果同时提供，`content` 作为记忆文本，`messages` 作为结构化来源原文保留
+- L0 以有限滑窗 + TTL 缓存近期记忆
+- L1 落一条新的情景记录，包含完整记忆文本和可选的来源消息
+- 返回是否已成功持久化到 L1 及对应的 `l1_id`

@@ -84,7 +84,7 @@ class ArchiveService:
                     "importance_score": record.importance_score,
                     "is_distilled": record.is_distilled,
                     "is_archived": True,
-                    "metadata": record.metadata_json,
+                    "messages": record.messages_json,
                     "created_at": record.created_at.isoformat(),
                 }
             )

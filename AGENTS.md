@@ -6,14 +6,22 @@
 
 ## 1. 项目概述
 
-**Mems** 是一套定位工业级的 AI Agent 记忆中枢方案。它通过四层冷热解耦架构，为智能体提供具备人格一致性、低成本检索和结构化进化的记忆基座，并面向第三方 Agent 提供清晰的公开 memory API。
+**Mems** 是面向 AI Agent 的记忆基础设施。通过四层冷热解耦架构，提供低成本检索、结构化进化和跨世纪保存的记忆基座。
+
+Mems 的核心理念：
+
+```text
+Mems 存储和召回记忆，不管理运行时状态
+```
+
+会话上下文、任务目标、活动计划、临时变量由调用方自行管理。
 
 ### 核心架构
 
 ```
- L0 (Redis) → L1 (SQL+Qdrant) → L2 (画像/事实/事件/摘要/冲突日志) → L3 (归档)
-     ↑
-  用户入口
+ 用户入口 → L0 (Redis 热缓存) → L1 (SQL + Qdrant 记忆账本)
+                                     ├→ L2 (画像/事实/事件/摘要/冲突日志)
+                                     └→ L3 (JSONL 归档)
 ```
 
 ### 技术栈
@@ -42,7 +50,7 @@ src/mems/
 │
 ├── services/
 │   ├── scheduler.py      # APScheduler 调度服务（单例）
-│   ├── redis_service.py  # Redis L0 服务（单例）
+│   ├── redis_service.py  # Redis L0 热缓存服务（单例）
 │   ├── l0_sync.py        # L0→L1 同步函数
 │   ├── vector_service.py # Qdrant Async SDK 封装
 │   ├── embedding.py      # Embedding 抽象层
@@ -70,7 +78,7 @@ docs/
 
 1. 在 `routers/` 创建新文件
 2. 注册到 `main.py` 的 `app.include_router()`
-3. 使用依赖注入获取 `session` 和 `redis`
+3. 使用依赖注入获取 `session`、`redis`、`vector_service`
 
 ```python
 # routers/example.py
@@ -88,33 +96,87 @@ async def create_example(session: Session = Depends(get_session)):
 
 ### 3.1.1 当前公开 API 约定
 
-- `POST /v1/mems/write`: 按 turn 追加会话消息，适合第三方 Agent 接入
-- `POST /v1/mems/query`: 做长期语义检索
-- `GET /v1/mems/context`: 获取当前 `session_id` 的 live 首页，并可通过 `before_id` 分页读取更早的 L1 历史
+- `POST /v1/mems/write`: 写入记忆到 L0/L1 — 只接收 `content` / `messages` / identity 字段，不接收运行时状态
+- `POST /v1/mems/query`: 跨 L0/L1/L2 语义检索
 - `GET /v1/mems/status`: 查看系统与流水线状态
 - `GET /v1/mems/health`: 轻量健康检查
 
 推荐对外接入流与文案统一遵循：
 
-- `Context -> Query -> Write`
+- `Remember -> Recall`
 - 对外表述优先与 `README.md`、`README_zh.md`、Swagger、文档站保持一致
 - 如果修改公开 API、首页文案或系统定位，需同步检查 README、`src/mems/main.py` 的 OpenAPI 描述，以及 `docs/src/` 文档站内容
+- 如果新增或修改 API 模型字段，需检查 `AGENTS.md` 中的模型说明
 
 ### 3.1.2 Memory Identity Model
 
-当前公开 memory API 已支持以下 identity 字段：
+当前公开 memory API 支持以下 identity 字段：
 
 - `tenant_id`: 可选租户 / 组织边界
 - `user_id`: 多用户 Agent 场景下建议显式传入
 - `agent_id`: Agent 边界
-- `session_id`: 会话边界
+- `session_id`: 可选会话来源标识
 - `scope`: 上层业务自定义的可见性标签
 
 推荐原则：
 
-- `tenant_id / user_id / agent_id / session_id` 是硬边界
+- `tenant_id / user_id / agent_id` 是硬边界
+- `session_id` 是可选的动作溯源标识，Mems 不依赖它做上下文管理
 - `scope` 是软可见性标签，由上层业务定义
 - 默认不要只靠 `agent_id` 做多用户隔离
+
+### 3.1.3 核心模型说明
+
+**MemsWriteRequest**
+```python
+class MemsWriteRequest(BaseModel):
+    tenant_id: str | None
+    user_id: str | None
+    agent_id: str
+    session_id: str | None
+    scope: str | None
+    content: str | None       # 直接记忆文本
+    messages: list[MemsMessage]  # 来源消息（可选）
+    ttl_seconds: int
+```
+
+规则：
+- `content` 和 `messages` 至少提供一个
+- 如果同时提供，`content` 作为记忆文本用于检索/蒸馏，`messages` 作为结构化原文保留
+- 没有 `active_plan`、`temp_variables`、`metadata` 字段
+
+**MemsL1Episodic**（数据库表）
+```python
+class MemsL1Episodic(SQLModel, table=True):
+    tenant_id / user_id / agent_id / session_id / scope
+    content: str                     # 记忆文本（用于检索和蒸馏）
+    messages_json: list[dict]        # 结构化来源消息（用于回放和审计）
+    vector_id: str                   # 向量副本 id
+    importance_score: float
+    is_distilled / is_archived
+    vector_status / archive_status
+    created_at
+```
+
+**MemsL0Working**（Redis 快照）
+```python
+class MemsL0Working(BaseModel):
+    tenant_id / user_id / agent_id / session_id / scope
+    content: str | None
+    short_term_buffer: list[dict]
+    expires_at: datetime
+```
+
+**QueryResultItem**
+```python
+class QueryResultItem(BaseModel):
+    source: str        # l0_hot / l1_episodic / l2_profile / l2_fact / l2_event / l2_summary
+    content: str
+    score: float
+    source_l1_ids: list[int]
+    session_id: str | None
+    tenant_id / user_id / scope
+```
 
 ### 3.2 新增数据库模型
 
@@ -140,7 +202,7 @@ class MyModel(SQLModel, table=True):
 class ExampleService:
     def __init__(self):
         self._cache = {}
-    
+
     async def process(self, data):
         ...
 
@@ -158,7 +220,7 @@ async def get_example_service() -> ExampleService:
 # config.py
 class Settings(BaseSettings):
     MY_CONFIG: str = "default"
-    
+
 settings = Settings()
 ```
 
@@ -166,6 +228,11 @@ settings = Settings()
 ```python
 from mems.config import settings
 ```
+
+### 3.5 状态端点注意事项
+
+状态端点 `GET /v1/mems/status` 使用 FastAPI 依赖注入获取 Redis、VectorService 和 Session。
+新增的健康检查项也应当通过 `Depends` 注入，而不是直接调用模块单例（否则测试替身无法覆盖）。
 
 ---
 
@@ -182,14 +249,14 @@ session: Session = Depends(get_session)
 
 ```python
 # 获取 redis 服务
-redis: RedisService = Depends(get_redis_service)
-await redis.write(tenant_id=..., user_id=..., agent_id=..., session_id=..., ...)
+redis: RedisService = Depends(get_redis_service)  # 测试环境自动注入 FakeRedisService
+l0 = await redis.write(tenant_id=..., user_id=..., agent_id=..., session_id=..., messages=..., content=...)
+l0 = await redis.read(agent_id=..., session_id=..., tenant_id=..., user_id=..., scope=...)
 ```
 
 ### 4.3 Embedding 服务
 
 ```python
-# 获取 embedding 服务
 embedding_service = await get_embedding_service()
 vectors = await embedding_service.embed(["text"])
 ```
@@ -197,8 +264,7 @@ vectors = await embedding_service.embed(["text"])
 ### 4.4 向量服务
 
 ```python
-# 获取向量服务
-vector_service = await get_vector_service()
+vector_service = await get_vector_service()  # 使用 Depends 注入以保证测试覆盖
 await vector_service.upsert("collection_name", points)
 results = await vector_service.search("collection_name", query_vector, filters={...})
 ```
@@ -209,7 +275,7 @@ results = await vector_service.search("collection_name", query_vector, filters={
 
 ### 5.1 L0→L1 自动双写
 
-用户调用 `/v1/mems/write` 时，可自动同步到 L1。
+用户调用 `/v1/mems/write` 时，自动同步到 L1。
 
 ### 5.2 蒸馏任务
 
@@ -292,19 +358,20 @@ except Exception:
 
 ### 7.4 第三方 Agent 接入时序
 
-推荐统一按照下面时序设计和调试：
+Mems 不管理会话上下文。推荐时序：
 
-1. `GET /v1/mems/context` 获取 live 首页，必要时继续带 `before_id` 向前翻历史
-2. `POST /v1/mems/query`
-3. 第三方 Agent 组装 prompt 并生成回答
-4. `POST /v1/mems/write`
+1. `POST /v1/mems/query` — 召回相关记忆
+2. 调用方自行组装 prompt 并生成回答
+3. `POST /v1/mems/write` — 将值得记住的内容写入系统
+
+先记再查或先查再记都可以，由调用方决定。
 
 ---
 
 ## 8. 测试
 
 ```bash
-# 运行测试
+# 运行测试（不需要外部服务，全 Fake 注入）
 uv run pytest
 
 # 代码检查
@@ -316,6 +383,9 @@ uv run mypy src/
 # 文档站构建检查
 cd docs && npm run build
 ```
+
+测试环境使用 `tests/conftest.py` 中的 `FakeRedisService`、`FakeVectorService`、`FakeEmbeddingService`，
+不需要运行 Docker 服务。新增端点时也需要使用 `Depends` 注入以保证测试覆盖。
 
 ---
 
@@ -353,7 +423,7 @@ uvicorn mems.main:app --reload --port 8210
 | Mems API | 8210 | FastAPI 主服务 |
 | MCP Server | 8210 | MCP 协议服务 (预留) |
 | Qdrant | 6333 | 向量数据库 |
-| Redis | 6379 | L0 工作记忆 |
+| Redis | 6379 | L0 热记忆缓存 |
 
 ---
 
@@ -363,4 +433,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) file for 
 
 ---
 
-*最后更新: 2026-04-06*
+*最后更新: 2026-07-27*

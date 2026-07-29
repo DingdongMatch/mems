@@ -1,11 +1,11 @@
 # Mems
 
-A layered, self-distilling, century-scale memory system for AI agents.
+A layered memory infrastructure for AI agents — remembers, recalls, distills, and archives.
 
-Mems is an industrial-grade memory hub solution for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.
+Mems stores and recalls memories across four layers. The caller owns runtime state.
 
-- `L0` handles live session working memory
-- `L1` stores episodic history and active online recall data
+- `L0` handles hot recent-memory cache
+- `L1` stores episodic memory — the source of truth
 - `L2` distills reusable long-term knowledge
 - `L3` archives old memory into JSONL
 
@@ -18,9 +18,9 @@ Mems is an industrial-grade memory hub solution for AI agents. Through a four-la
 
 ## Core Design Philosophy: Why Mems
 
-- **⚡ Instant working memory (L0)** with Redis-backed live context
+- **⚡ Hot memory cache (L0)** with Redis-backed fast recall
 - **🧠 Asynchronous knowledge distillation (L2)** from raw L1 history to stable semantic facts
 - **🔍 Evidence grounding** so distilled memory remains traceable to L1 source material
 - **📜 Century-scale archive (L3)** with text-first JSONL retention
 - **🛡️ Production-grade isolation** across tenant, user, agent, and session boundaries
-- **🔌 Atomic integration** through `Context -> Query -> Write`
+- **🔌 Atomic integration** through `Remember -> Recall`

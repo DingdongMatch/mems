@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 import redis.asyncio as redis
 
 from mems.config import settings
@@ -34,7 +34,7 @@ class RedisService:
     def _key(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
@@ -46,23 +46,25 @@ class RedisService:
         tenant_part = tenant_id or "_"
         user_part = user_id or "_"
         scope_part = scope or "_"
-        return f"mems:l0:{tenant_part}:{user_part}:{scope_part}:{agent_id}:{session_id}"
+        session_part = session_id or "_"
+        return (
+            f"mems:l0:{tenant_part}:{user_part}:{scope_part}:{agent_id}:{session_part}"
+        )
 
     async def write(
         self,
         tenant_id: Optional[str],
         user_id: Optional[str],
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str],
         messages: List[Dict[str, str]],
+        content: Optional[str] = None,
         scope: Optional[str] = None,
-        active_plan: Optional[str] = None,
-        temp_variables: Dict[str, Any] | None = None,
         ttl_seconds: int = 1800,
     ) -> MemsL0Working:
-        """Write the current working-memory snapshot into Redis.
+        """Write the current hot-memory snapshot into Redis.
 
-        将当前工作记忆快照写入 Redis。
+        将当前热记忆快照写入 Redis。
         """
         client = await self.get_client()
         expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
@@ -73,9 +75,8 @@ class RedisService:
             agent_id=agent_id,
             session_id=session_id,
             scope=scope,
+            content=content,
             short_term_buffer=messages,
-            active_plan=active_plan,
-            temp_variables=temp_variables or {},
             expires_at=expires_at,
         )
 
@@ -90,7 +91,7 @@ class RedisService:
     async def read(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
@@ -110,7 +111,7 @@ class RedisService:
     async def delete(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
         scope: Optional[str] = None,
@@ -127,7 +128,7 @@ class RedisService:
     async def append_message(
         self,
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str],
         message: Dict[str, str],
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -169,13 +170,12 @@ class RedisService:
         tenant_id: Optional[str],
         user_id: Optional[str],
         agent_id: str,
-        session_id: str,
+        session_id: Optional[str],
         messages: List[Dict[str, str]],
+        content: Optional[str] = None,
         ttl_seconds: int = 1800,
         max_buffer_size: int = 10,
         scope: Optional[str] = None,
-        active_plan: Optional[str] = None,
-        temp_variables: Dict[str, Any] | None = None,
     ) -> MemsL0Working:
         """Append multiple messages and create the session if needed.
 
@@ -196,19 +196,15 @@ class RedisService:
                 agent_id=agent_id,
                 session_id=session_id,
                 messages=trimmed,
+                content=content,
                 scope=scope,
-                active_plan=active_plan,
-                temp_variables=temp_variables,
                 ttl_seconds=ttl_seconds,
             )
 
         merged_messages = existing.short_term_buffer + messages
         trimmed_messages = merged_messages[-max_buffer_size:]
-        merged_plan = active_plan if active_plan is not None else existing.active_plan
         merged_scope = scope if scope is not None else existing.scope
-        merged_variables = dict(existing.temp_variables)
-        if temp_variables:
-            merged_variables.update(temp_variables)
+        merged_content = content if content is not None else existing.content
 
         client = await self.get_client()
         current_ttl = await client.ttl(
@@ -222,9 +218,8 @@ class RedisService:
             agent_id=agent_id,
             session_id=session_id,
             messages=trimmed_messages,
+            content=merged_content,
             scope=merged_scope,
-            active_plan=merged_plan,
-            temp_variables=merged_variables,
             ttl_seconds=effective_ttl,
         )
 

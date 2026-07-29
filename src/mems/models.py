@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict
 from sqlalchemy import Column, JSON
 from sqlmodel import Field, SQLModel
 
@@ -18,7 +18,7 @@ class MemsL1Episodic(SQLModel, table=True):
     tenant_id: Optional[str] = Field(default=None, index=True)
     user_id: Optional[str] = Field(default=None, index=True)
     agent_id: str = Field(index=True)
-    session_id: str = Field(index=True, default="")
+    session_id: Optional[str] = Field(default=None, index=True)
     # Soft visibility tag defined by the upstream business.
     # 上层业务定义的软可见性标签。
     scope: Optional[str] = Field(default=None, index=True)
@@ -37,9 +37,11 @@ class MemsL1Episodic(SQLModel, table=True):
     archive_status: str = Field(default="pending", index=True)
     last_sync_error: Optional[str] = None
     last_sync_at: Optional[datetime] = None
-    # Extra payload such as messages, active_plan, and runtime metadata.
-    # 额外载荷，例如 messages、active_plan 与运行态元数据。
-    metadata_json: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON))
+    # Optional structured source messages preserved for faithful replay/audit.
+    # 可选的结构化来源消息，用于保真回放与审计。
+    messages_json: List[Dict[str, str]] = Field(
+        default_factory=list, sa_column=Column(JSON)
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

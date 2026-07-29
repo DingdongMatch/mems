@@ -1,7 +1,7 @@
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from sqlmodel import Session
 
@@ -38,15 +38,15 @@ async def sync_l0_to_l1(
     l0_data: MemsL0Working,
     session: Session,
     importance_score: float = 0.5,
-    metadata: Optional[Dict[str, Any]] = None,
 ) -> Optional[int]:
     """Persist one L0 snapshot into L1 and its replicas.
 
     将单个 L0 快照落入 L1，并同步向量副本。
     """
     try:
-        # 将 L0 的消息合并为一个内容
-        if l0_data.short_term_buffer:
+        if l0_data.content:
+            content = l0_data.content
+        elif l0_data.short_term_buffer:
             content_parts = []
             for msg in l0_data.short_term_buffer:
                 role = msg.get("role", "user")
@@ -54,25 +54,13 @@ async def sync_l0_to_l1(
                 content_parts.append(f"{role}: {content}")
             content = "\n".join(content_parts)
         else:
-            content = (
-                f"Active plan: {l0_data.active_plan}" if l0_data.active_plan else ""
-            )
+            content = ""
 
         if not content:
             logger.warning("L0 data is empty, skipping sync to L1")
             return None
 
         vector_id = str(uuid.uuid4())
-
-        # 合并元数据
-        full_metadata = dict(metadata or {})
-        full_metadata["tenant_id"] = l0_data.tenant_id
-        full_metadata["user_id"] = l0_data.user_id
-        full_metadata["scope"] = l0_data.scope
-        full_metadata["active_plan"] = l0_data.active_plan
-        full_metadata["temp_variables"] = l0_data.temp_variables
-        full_metadata.setdefault("source", "l0_sync")
-        full_metadata["sync_source"] = "l0_sync"
 
         # 写入 L1
         l1_record = MemsL1Episodic(
@@ -87,7 +75,7 @@ async def sync_l0_to_l1(
             is_distilled=False,
             vector_status="pending",
             archive_status="pending",
-            metadata_json=full_metadata,
+            messages_json=l0_data.short_term_buffer,
         )
         session.add(l1_record)
         session.commit()

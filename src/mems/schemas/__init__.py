@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field
+from typing import Optional, List, Dict
+from pydantic import BaseModel, Field, model_validator
 
 
 # ===================
@@ -41,45 +41,6 @@ class MemsQueryRequest(BaseModel):
     )
 
 
-class MemsContextRequest(BaseModel):
-    """Request model for fetching live context or history pages.
-
-    用于获取实时上下文或历史分页的请求模型。
-    """
-
-    # Hard identity boundaries for context isolation.
-    # 上下文隔离使用的硬身份边界。
-    tenant_id: Optional[str] = Field(
-        default=None, description="Optional tenant boundary. / 可选租户边界。"
-    )
-    user_id: Optional[str] = Field(
-        default=None, description="Optional user boundary. / 可选用户边界。"
-    )
-    agent_id: str = Field(
-        description="Agent boundary used for context isolation. / 用于上下文隔离的 Agent 边界。"
-    )
-    session_id: str = Field(
-        description="Session whose context should be loaded. / 需要加载上下文的 session。"
-    )
-    # Soft visibility tag defined by the upstream business.
-    # 上层业务定义的软可见性标签。
-    scope: Optional[str] = Field(
-        default=None,
-        description="Soft visibility tag for filtering. / 用于过滤的软可见性标签。",
-    )
-    limit: int = Field(
-        default=10,
-        ge=1,
-        le=100,
-        description="Number of L1 records per page. / 每页返回的 L1 记录数。",
-    )
-    before_id: Optional[int] = Field(
-        default=None,
-        ge=1,
-        description="History pagination cursor; loads older L1 records with smaller ids. / 历史分页游标；传入后返回 id 更小的更早 L1 记录。",
-    )
-
-
 class MemsMessage(BaseModel):
     """One chat turn with role and content.
 
@@ -98,9 +59,9 @@ class MemsMessage(BaseModel):
 
 
 class MemsWriteRequest(BaseModel):
-    """Request body for appending conversation turns into memory.
+    """Request body for remembering memory content.
 
-    用于向记忆系统追加会话轮次的请求体。
+    用于向记忆系统写入记忆内容的请求体。
     """
 
     # Hard identity boundaries for multi-tenant and multi-user isolation.
@@ -114,8 +75,9 @@ class MemsWriteRequest(BaseModel):
     agent_id: str = Field(
         description="Agent boundary used for write isolation. / 用于写入隔离的 Agent 边界。"
     )
-    session_id: str = Field(
-        description="Live session receiving the appended turns. / 接收追加消息的实时 session。"
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Optional source session id. / 可选的来源会话 id。",
     )
     # Soft visibility tag defined by the upstream business.
     # 上层业务定义的软可见性标签。
@@ -123,30 +85,28 @@ class MemsWriteRequest(BaseModel):
         default=None,
         description="Soft visibility tag for the turns. / 本次 turn 的软可见性标签。",
     )
+    content: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        description="Memory text to store directly. / 直接写入的记忆文本。",
+    )
     messages: List[MemsMessage] = Field(
         default_factory=list,
-        min_length=1,
-        description="Turns to append, usually one user turn plus one assistant turn. / 要追加的消息，通常为一条 user 和一条 assistant。",
-    )
-    # Current task/goal of the agent in this session.
-    # 当前会话中 agent 正在推进的任务或目标。
-    active_plan: Optional[str] = Field(
-        default=None,
-        description="Current task or goal of the session. / 当前会话正在推进的任务目标。",
-    )
-    # Ephemeral runtime state, not durable long-term facts.
-    # 临时运行态变量，不代表长期事实。
-    temp_variables: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Ephemeral runtime variables for the live session. / 当前实时会话的临时运行态变量。",
+        description="Optional source messages to remember. / 可选的来源消息。",
     )
     ttl_seconds: int = Field(
         default=1800, ge=1, le=604800, description="L0 TTL，单位秒"
     )
-    metadata: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="Extra metadata written with this turn batch. / 随本次 turn 一起写入的附加元数据。",
-    )
+
+    @model_validator(mode="after")
+    def validate_memory_payload(self) -> "MemsWriteRequest":
+        """Require either direct content or source messages.
+
+        要求至少提供直接 content 或来源 messages。
+        """
+        if not self.content and not self.messages:
+            raise ValueError("Either content or messages must be provided")
+        return self
 
 
 # ===================
@@ -166,8 +126,9 @@ class QueryResultItem(BaseModel):
     )
     content: str
     score: float
-    metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
+    source_l1_ids: List[int] = Field(default_factory=list)
+    session_id: Optional[str] = None
     # Identity context attached to the recalled memory item.
     # 命中记忆项所附带的身份上下文。
     tenant_id: Optional[str] = None
@@ -188,52 +149,10 @@ class MemsQueryResponse(BaseModel):
     )
 
 
-class MemsContextResponse(BaseModel):
-    """Response payload for live context or historical pages.
-
-    实时上下文或历史分页的响应载荷。
-    """
-
-    # Hard identity boundaries echoed back for the returned page.
-    # 当前返回页对应的硬身份边界。
-    tenant_id: Optional[str] = None
-    user_id: Optional[str] = None
-    agent_id: str
-    session_id: str
-    # Soft visibility tag echoed back for the returned page.
-    # 当前返回页对应的软可见性标签。
-    scope: Optional[str] = None
-    source: str = Field(
-        description="Context source: `l0`, `l1`, or `mixed`. / 上下文来源：`l0`、`l1` 或 `mixed`。"
-    )
-    page_type: str = Field(
-        description="`live` for the first page, `history` for older L1 pages. / `live` 表示首页，`history` 表示更早的 L1 历史页。"
-    )
-    messages: List[Dict[str, str]] = Field(
-        default_factory=list,
-        description="Flattened message list returned for this page. / 当前页返回的扁平化消息列表。",
-    )
-    total: int = Field(
-        description="Number of messages returned on this page. / 当前页返回的消息数量。"
-    )
-    has_more: bool = Field(
-        default=False,
-        description="Whether older history pages are still available. / 是否还有更早的历史页。",
-    )
-    next_before_id: Optional[int] = Field(
-        default=None,
-        description="Cursor for loading the next older history page. / 用于继续加载更早历史页的游标。",
-    )
-    expires_at: Optional[datetime] = Field(
-        default=None,
-        description="Expiration time of the live L0 snapshot, if present. / 若存在 L0 快照，则为其过期时间。",
-    )
-
-
 class MemsWriteResponse(BaseModel):
-    """Response payload after appending conversation turns.
+    """Response payload after remembering content.
 
-    追加会话轮次后的响应载荷。
+    写入记忆后的响应载荷。
     """
 
     success: bool
@@ -242,13 +161,14 @@ class MemsWriteResponse(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    session_id: str
+    session_id: Optional[str] = None
     # Soft visibility tag echoed back to the caller.
     # 回传给调用方的软可见性标签。
     scope: Optional[str] = None
-    short_term_buffer: List[Dict[str, str]]
+    content: str
+    messages: List[Dict[str, str]] = Field(default_factory=list)
     appended_count: int = Field(
-        description="Number of turns appended in this request. / 本次请求追加的消息条数。"
+        description="Number of source messages remembered in this request. / 本次请求写入的来源消息条数。"
     )
     persisted_to_l1: bool = Field(
         description="是否已成功写入 L1 主记录（副本同步可能稍后修复）"
@@ -409,9 +329,9 @@ class ArchiveResponse(BaseModel):
 
 
 class MemsL0Working(BaseModel):
-    """In-memory L0 working-memory snapshot stored in Redis.
+    """In-memory L0 hot-memory snapshot stored in Redis.
 
-    存储在 Redis 中的 L0 工作记忆快照。
+    存储在 Redis 中的 L0 热记忆快照。
     """
 
     # Hard identity boundaries for the live working-memory slot.
@@ -419,17 +339,12 @@ class MemsL0Working(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    session_id: str
+    session_id: Optional[str] = None
     # Soft visibility tag defined by the upstream business.
     # 上层业务定义的软可见性标签。
     scope: Optional[str] = None
+    content: Optional[str] = None
     short_term_buffer: List[Dict[str, str]] = Field(default_factory=list)
-    # Current task/goal being actively pursued in this session.
-    # 当前会话里正在推进的任务或目标。
-    active_plan: Optional[str] = None
-    # Ephemeral runtime state that should travel with the live session.
-    # 需要随实时会话一起保存的临时运行态变量。
-    temp_variables: Dict[str, Any] = Field(default_factory=dict)
     # TTL-based expiration time for the live Redis snapshot.
     # Redis 实时快照按 TTL 计算出的过期时间。
     expires_at: datetime

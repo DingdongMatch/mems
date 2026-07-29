@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Mems"
   text: "Layered memory for AI agents"
-  tagline: "An industrial-grade memory hub with self-distillation, long-term recall, and century-scale archive retention."
+  tagline: "Remember, recall, distill, archive — memory infrastructure for AI agents."
   actions:
     - theme: brand
       text: English Docs
@@ -14,8 +14,8 @@ hero:
       link: /zh/
 
 features:
-  - title: "L0 Working Memory"
-    details: "Redis-backed live context keeps the current session responsive at millisecond scale."
+  - title: "L0 Hot Memory Cache"
+    details: "Redis-backed fast recall for recent memories, without owning runtime state."
   - title: "L2 Knowledge Distillation"
     details: "An automated LLM pipeline turns raw L1 narratives into reusable semantic knowledge."
   - title: "Grounded Memory"
@@ -25,5 +25,5 @@ features:
   - title: "Production Isolation"
     details: "Tenant, user, agent, and session boundaries support SaaS and enterprise deployment."
   - title: "Atomic Integration"
-    details: "Third-party agents integrate with one compact flow: Context, Query, then Write."
+    details: "Third-party agents integrate with one compact flow: Remember, then Recall."
 ---

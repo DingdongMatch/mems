@@ -4,12 +4,12 @@ import inspect
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import func
 from sqlmodel import Session, select
 
 from mems.config import settings
-from mems.database import engine, get_session
+from mems.database import get_session
 from mems.models import (
     MemsL1Episodic,
     MemsL2ConflictLog,
@@ -20,8 +20,6 @@ from mems.models import (
 )
 from mems.schemas import (
     HealthCheckItem,
-    MemsContextRequest,
-    MemsContextResponse,
     MemsQueryRequest,
     MemsQueryResponse,
     MemsWriteRequest,
@@ -45,13 +43,14 @@ SEARCH_MIN_CANDIDATE_LIMIT = 50
 STALE_MEMORY_DAYS = 365
 
 WRITE_MEMORY_EXAMPLE = {
-    "summary": "Append user and assistant turns / 按轮次追加消息",
+    "summary": "Remember memory content / 写入记忆内容",
     "value": {
         "tenant_id": "tenant_demo",
         "user_id": "user_alice",
         "agent_id": "support_agent",
         "session_id": "session_20260401_001",
         "scope": "private",
+        "content": "The user likes Rust and concise answers.",
         "messages": [
             {
                 "role": "user",
@@ -59,10 +58,7 @@ WRITE_MEMORY_EXAMPLE = {
             },
             {"role": "assistant", "content": "Stored. I will keep replies concise."},
         ],
-        "active_plan": "Collect user preferences and prepare the next reply.",
-        "temp_variables": {"ticket_id": "T-1001", "step": "collect_preferences"},
         "ttl_seconds": 1800,
-        "metadata": {"source": "swagger_example", "channel": "web"},
     },
 }
 
@@ -78,25 +74,6 @@ SEARCH_MEMORY_EXAMPLE = {
     },
 }
 
-TURN_WRITE_EXAMPLE = {
-    "summary": "Append user and assistant turns / 按轮次追加消息",
-    "value": {
-        "tenant_id": "tenant_demo",
-        "user_id": "user_alice",
-        "agent_id": "support_agent",
-        "session_id": "session_20260401_001",
-        "scope": "private",
-        "messages": [
-            {"role": "user", "content": "Please answer in Chinese."},
-            {"role": "assistant", "content": "好的，我会继续使用中文回答。"},
-        ],
-        "active_plan": "Continue the support conversation in Chinese.",
-        "temp_variables": {"language": "zh-CN"},
-        "ttl_seconds": 1800,
-        "metadata": {"source": "swagger_example"},
-    },
-}
-
 WRITE_MEMORY_RESPONSE_EXAMPLE = {
     "content": {
         "application/json": {
@@ -107,7 +84,8 @@ WRITE_MEMORY_RESPONSE_EXAMPLE = {
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
                 "scope": "private",
-                "short_term_buffer": [
+                "content": "The user likes Rust and concise answers.",
+                "messages": [
                     {
                         "role": "user",
                         "content": "Remember that I like Rust and concise answers.",
@@ -117,14 +95,10 @@ WRITE_MEMORY_RESPONSE_EXAMPLE = {
                         "content": "Stored. I will keep replies concise.",
                     },
                 ],
-                "active_plan": "Collect user preferences and prepare the next reply.",
-                "temp_variables": {
-                    "ticket_id": "T-1001",
-                    "step": "collect_preferences",
-                },
+                "appended_count": 2,
                 "persisted_to_l1": True,
                 "l1_id": 101,
-                "message": "Memory written and persisted to L1",
+                "message": "Memory remembered and persisted to L1",
             }
         }
     }
@@ -170,12 +144,7 @@ SEARCH_MEMORY_RESPONSE_EXAMPLE = {
                         "source": "l2_profile",
                         "content": "like technology Rust",
                         "score": 1.52,
-                        "metadata": {
-                            "category": "like",
-                            "key": "technology",
-                            "value": "Rust",
-                            "source_ids": [101],
-                        },
+                        "source_l1_ids": [101],
                         "created_at": "2026-04-01T10:00:00Z",
                         "tenant_id": "tenant_demo",
                         "user_id": "user_alice",
@@ -185,11 +154,8 @@ SEARCH_MEMORY_RESPONSE_EXAMPLE = {
                         "source": "l1_episodic",
                         "content": "user: Remember that I like Rust and concise answers.",
                         "score": 1.14,
-                        "metadata": {
-                            "l1_id": 101,
-                            "vector_id": "vec_101",
-                            "session_id": "session_20260401_001",
-                        },
+                        "source_l1_ids": [101],
+                        "session_id": "session_20260401_001",
                         "created_at": "2026-04-01T10:00:00Z",
                         "tenant_id": "tenant_demo",
                         "user_id": "user_alice",
@@ -197,36 +163,6 @@ SEARCH_MEMORY_RESPONSE_EXAMPLE = {
                     },
                 ],
                 "total": 2,
-            }
-        }
-    }
-}
-
-CONTEXT_RESPONSE_EXAMPLE = {
-    "content": {
-        "application/json": {
-            "example": {
-                "tenant_id": "tenant_demo",
-                "user_id": "user_alice",
-                "agent_id": "support_agent",
-                "session_id": "session_20260401_001",
-                "scope": "private",
-                "source": "mixed",
-                "page_type": "live",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": "Remember that I like Rust and concise answers.",
-                    },
-                    {
-                        "role": "assistant",
-                        "content": "Stored. I will keep replies concise.",
-                    },
-                ],
-                "total": 2,
-                "has_more": False,
-                "next_before_id": None,
-                "expires_at": "2026-04-01T10:30:00Z",
             }
         }
     }
@@ -242,14 +178,15 @@ TURN_WRITE_RESPONSE_EXAMPLE = {
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
                 "scope": "private",
-                "short_term_buffer": [
+                "content": "user: Please answer in Chinese.\nassistant: 好的，我会继续使用中文回答。",
+                "messages": [
                     {"role": "user", "content": "Please answer in Chinese."},
                     {"role": "assistant", "content": "好的，我会继续使用中文回答。"},
                 ],
                 "appended_count": 2,
                 "persisted_to_l1": True,
                 "l1_id": 102,
-                "message": "Turns appended and persisted to L1",
+                "message": "Memory remembered and persisted to L1",
             }
         }
     }
@@ -424,85 +361,6 @@ def _rank_verified_score(
     )
 
 
-def _parse_l1_content_to_messages(content: str) -> list[dict[str, str]]:
-    """Parse stored L1 text back into role/content messages.
-
-    将存储在 L1 中的文本重新解析为 role/content 消息。
-    """
-    messages: list[dict[str, str]] = []
-    for line in content.splitlines():
-        if ": " in line:
-            role, text = line.split(": ", 1)
-            if role and text:
-                messages.append({"role": role, "content": text})
-        elif line.strip():
-            messages.append({"role": "system", "content": line.strip()})
-    return messages
-
-
-def _extract_l1_messages(record: MemsL1Episodic) -> list[dict[str, str]]:
-    """Extract normalized message objects from one L1 record.
-
-    从单条 L1 记录中提取标准化消息对象。
-    """
-    metadata_messages = (record.metadata_json or {}).get("messages")
-    if isinstance(metadata_messages, list):
-        normalized_messages = []
-        for item in metadata_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "")).strip()
-            content = str(item.get("content", "")).strip()
-            if role and content:
-                normalized_messages.append({"role": role, "content": content})
-        if normalized_messages:
-            return normalized_messages
-    return _parse_l1_content_to_messages(record.content)
-
-
-def _merge_live_messages(
-    history_messages: list[dict[str, str]], live_messages: list[dict[str, str]]
-) -> list[dict[str, str]]:
-    """Merge L1 history and live L0 messages without duplicating overlap.
-
-    合并 L1 历史与 L0 实时消息，并避免重复重叠片段。
-    """
-    if not history_messages:
-        return list(live_messages)
-    if not live_messages:
-        return list(history_messages)
-
-    if len(live_messages) >= len(history_messages):
-        for start in range(len(live_messages) - len(history_messages) + 1):
-            if live_messages[start : start + len(history_messages)] == history_messages:
-                return list(live_messages)
-
-    max_overlap = min(len(history_messages), len(live_messages))
-    for overlap in range(max_overlap, 0, -1):
-        if history_messages[-overlap:] == live_messages[:overlap]:
-            return history_messages + live_messages[overlap:]
-    return history_messages + live_messages
-
-
-def _expand_l1_page(
-    records: list[MemsL1Episodic], page_limit: int
-) -> tuple[list[dict[str, str]], bool, int | None]:
-    """Expand an L1 page of records into flat message history.
-
-    将一页 L1 记录展开为扁平化消息历史。
-    """
-    has_more = len(records) > page_limit
-    page_records = records[:page_limit]
-
-    page_records = list(reversed(page_records))
-    messages: list[dict[str, str]] = []
-    for record in page_records:
-        messages.extend(_extract_l1_messages(record))
-
-    next_before_id = page_records[0].id if has_more and page_records else None
-    return messages, has_more, next_before_id
-
-
 def _with_identity_filters(query, model, request) -> Any:
     """Apply tenant, user, and scope filters to a query.
 
@@ -527,19 +385,30 @@ def _count_rows(session: Session, statement) -> int:
     )
 
 
+def _messages_to_content(messages: list[dict[str, str]]) -> str:
+    """Flatten source messages into memory text.
+
+    将来源消息展平成记忆文本。
+    """
+    return "\n".join(
+        f"{message.get('role', 'user')}: {message.get('content', '')}"
+        for message in messages
+        if message.get("content")
+    )
+
+
 @router.post(
     "/write",
     response_model=MemsWriteResponse,
-    summary="Write memory turns / 标准消息写入",
+    summary="Remember memory / 写入记忆",
     description=(
-        "Append user and assistant turns into live L0 memory and persist the primary SQL record into L1. "
-        "This is the standard write endpoint for third-party agent integrations.\n\n"
-        "把 user / assistant 消息追加到实时 L0 记忆，并持久化主 L1 SQL 记录。"
-        "这是第三方 Agent 标准写入接口。"
+        "Remember memory content into L0 hot memory and persist the primary SQL record into L1. "
+        "Mems stores memories and leaves runtime state to the caller.\n\n"
+        "把记忆内容写入 L0 热记忆，并持久化主 L1 SQL 记录。Mems 只处理记忆，运行时状态由调用方管理。"
     ),
     responses={
         200: {
-            "description": "Turns were appended successfully. / 会话轮次已成功追加。",
+            "description": "Memory was remembered successfully. / 记忆已成功写入。",
             **TURN_WRITE_RESPONSE_EXAMPLE,
         }
     },
@@ -549,22 +418,22 @@ async def write_memory(
     redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
 ):
-    """Append chat turns into L0 and persist a new L1 record.
+    """Remember content into L0 and persist a new L1 record.
 
-    按轮次向 L0 追加消息，并落一条新的 L1 记录。
+    将记忆写入 L0，并落一条新的 L1 记录。
     """
     try:
         new_messages = [message.model_dump() for message in request.messages]
+        memory_content = request.content or _messages_to_content(new_messages)
         l0 = await redis.append_messages(
             tenant_id=request.tenant_id,
             user_id=request.user_id,
             agent_id=request.agent_id,
             session_id=request.session_id,
             messages=new_messages,
+            content=memory_content,
             ttl_seconds=request.ttl_seconds,
             scope=request.scope,
-            active_plan=request.active_plan,
-            temp_variables=request.temp_variables,
             max_buffer_size=DEFAULT_CONTEXT_WINDOW,
         )
 
@@ -572,12 +441,6 @@ async def write_memory(
             l0_data=l0.model_copy(update={"short_term_buffer": new_messages}),
             session=session,
             importance_score=0.5,
-            metadata={
-                "append_mode": "turns",
-                "ttl_seconds": request.ttl_seconds,
-                "messages": new_messages,
-                **request.metadata,
-            },
         )
         persisted = l1_id is not None
 
@@ -588,14 +451,15 @@ async def write_memory(
             agent_id=l0.agent_id,
             session_id=l0.session_id,
             scope=l0.scope,
-            short_term_buffer=l0.short_term_buffer,
+            content=memory_content,
+            messages=new_messages,
             appended_count=len(new_messages),
             persisted_to_l1=persisted,
             l1_id=l1_id,
             message=(
-                "Turns appended and persisted to L1"
+                "Memory remembered and persisted to L1"
                 if persisted
-                else "Turns appended to L0"
+                else "Memory remembered in L0"
             ),
         )
     except Exception as e:
@@ -608,10 +472,12 @@ async def write_memory(
     response_model=MemsQueryResponse,
     summary="Query memory / 记忆检索",
     description=(
-        "Search active L1 episodic memory together with L2 semantic memory. Archived L1 records are excluded from default online recall. "
-        "Use this endpoint after loading context and before generating the next answer.\n\n"
-        "同时检索活跃的 L1 情景记忆和 L2 语义记忆。默认不会召回已归档的 L1 记录。"
-        "建议在读取上下文后、生成回答前调用该接口。"
+        "Search across L0 hot cache, L1 episodic, and L2 semantic memory. L0 recent memory and active L1 are searched alongside L2 distilled knowledge. "
+        "Archived L1 records are excluded from default online recall. "
+        "Use this endpoint when the caller needs to recall relevant memories.\n\n"
+        "跨 L0 热缓存、L1 情景记忆和 L2 语义记忆进行检索。L0 近期记忆与活跃 L1 一同参与检索，并连同 L2 蒸馏知识返回。"
+        "默认不会召回已归档的 L1 记录。"
+        "调用方需要召回相关记忆时使用该接口。"
     ),
     responses={
         200: {
@@ -622,14 +488,40 @@ async def write_memory(
 )
 async def search_memory(
     request: MemsQueryRequest = Body(openapi_examples={"basic": SEARCH_MEMORY_EXAMPLE}),
+    redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
 ):
-    """Search active memory across L1 episodic and L2 semantic layers.
+    """Search memory across L0 hot cache, L1 episodic, and L2 semantic layers.
 
-    在 L1 情景层和 L2 语义层之间执行统一混合检索。
+    在 L0 热缓存、L1 情景层和 L2 语义层之间执行统一混合检索。
     """
     try:
         query_intents = _detect_query_intents(request.query)
+
+        # ---- L0 hot memory cache ----
+        l0 = await redis.read(
+            request.agent_id,
+            tenant_id=request.tenant_id,
+            user_id=request.user_id,
+            scope=request.scope,
+        )
+        results: list[QueryResultItem] = []
+        if l0 and l0.content:
+            l0_score = _keyword_score(request.query, l0.content, 0.7)
+            if l0_score > 0:
+                results.append(
+                    QueryResultItem(
+                        source="l0_hot",
+                        content=l0.content,
+                        score=l0_score,
+                        session_id=l0.session_id,
+                        tenant_id=l0.tenant_id,
+                        user_id=l0.user_id,
+                        scope=l0.scope,
+                    )
+                )
+
+        # ---- L1 + L2 ----
         vector_service = await get_vector_service()
         embedding_service = await get_embedding_service()
 
@@ -670,7 +562,6 @@ async def search_memory(
             SEARCH_MIN_CANDIDATE_LIMIT,
         )
 
-        results = []
         seen_l1_ids = set()
         vector_ids = []
 
@@ -715,11 +606,8 @@ async def search_memory(
                         l1_record.created_at,
                         query_intents,
                     ),
-                    metadata={
-                        "l1_id": l1_record.id,
-                        "vector_id": l1_record.vector_id,
-                        "session_id": l1_record.session_id,
-                    },
+                    source_l1_ids=[l1_record.id] if l1_record.id is not None else [],
+                    session_id=l1_record.session_id,
                     created_at=l1_record.created_at,
                     tenant_id=l1_record.tenant_id,
                     user_id=l1_record.user_id,
@@ -756,12 +644,7 @@ async def search_memory(
                         item.last_verified_at,
                         query_intents,
                     ),
-                    metadata={
-                        "category": item.category,
-                        "key": item.key,
-                        "value": item.value,
-                        "source_ids": item.source_l1_ids,
-                    },
+                    source_l1_ids=item.source_l1_ids,
                     created_at=item.last_verified_at,
                     tenant_id=item.tenant_id,
                     user_id=item.user_id,
@@ -795,13 +678,7 @@ async def search_memory(
                         item.last_verified_at,
                         query_intents,
                     ),
-                    metadata={
-                        "fact_type": item.fact_type,
-                        "subject": item.subject,
-                        "predicate": item.predicate,
-                        "object": item.object,
-                        "source_ids": item.source_l1_ids,
-                    },
+                    source_l1_ids=item.source_l1_ids,
                     created_at=item.last_verified_at,
                     tenant_id=item.tenant_id,
                     user_id=item.user_id,
@@ -835,10 +712,7 @@ async def search_memory(
                         item.created_at,
                         query_intents,
                     ),
-                    metadata={
-                        "time_hint": item.time_hint,
-                        "source_ids": item.source_l1_ids,
-                    },
+                    source_l1_ids=item.source_l1_ids,
                     created_at=item.created_at,
                     tenant_id=item.tenant_id,
                     user_id=item.user_id,
@@ -873,11 +747,7 @@ async def search_memory(
                         item.last_verified_at,
                         query_intents,
                     ),
-                    metadata={
-                        "summary_type": item.summary_type,
-                        "source_ids": item.source_l1_ids,
-                        "vector_id": item.vector_id,
-                    },
+                    source_l1_ids=item.source_l1_ids,
                     created_at=item.created_at,
                     tenant_id=item.tenant_id,
                     user_id=item.user_id,
@@ -899,148 +769,6 @@ async def search_memory(
 
 
 @router.get(
-    "/context",
-    response_model=MemsContextResponse,
-    summary="Get paginated session context / 获取分页会话上下文",
-    description=(
-        "Return the live context page for a session. The first page merges Redis L0 live context with the latest L1 records when needed, "
-        "while `before_id` loads older L1 history pages. The `limit` parameter is the number of L1 records per page.\n\n"
-        "返回指定会话的实时上下文首页。首页会优先结合 Redis L0 与最新的 L1 记录；传入 `before_id` 时会继续加载更早的 L1 历史分页。"
-        "`limit` 表示每页包含多少条 L1 记录。"
-    ),
-    responses={
-        200: {
-            "description": "Live or historical context page. / 实时或历史上下文分页结果。",
-            **CONTEXT_RESPONSE_EXAMPLE,
-        }
-    },
-)
-async def get_memory_context(
-    tenant_id: str | None = Query(
-        default=None,
-        description="Optional tenant boundary. / 可选租户边界。",
-        examples=["tenant_demo"],
-    ),
-    user_id: str | None = Query(
-        default=None,
-        description="Optional user boundary. / 可选用户边界。",
-        examples=["user_alice"],
-    ),
-    agent_id: str = Query(
-        ...,
-        description="Agent boundary for context isolation. / 用于上下文隔离的 Agent 边界。",
-        examples=["support_agent"],
-    ),
-    session_id: str = Query(
-        ...,
-        description="Session id whose context should be loaded. / 需要加载上下文的 session id。",
-        examples=["session_20260401_001"],
-    ),
-    scope: str | None = Query(
-        default=None,
-        description="Soft visibility tag for filtering. / 用于过滤的软可见性标签。",
-        examples=["private"],
-    ),
-    limit: int = Query(
-        default=10,
-        ge=1,
-        le=100,
-        description="Number of L1 records per page. / 每页返回的 L1 记录数。",
-    ),
-    before_id: int | None = Query(
-        default=None,
-        ge=1,
-        description="History cursor for older L1 pages. / 更早 L1 历史页的游标。",
-    ),
-    redis: RedisService = Depends(get_redis_service),
-    session: Session = Depends(get_session),
-):
-    """Return the live session context or an older L1 history page.
-
-    返回当前会话的实时上下文，或更早的 L1 历史分页。
-    """
-    try:
-        request = MemsContextRequest(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            scope=scope,
-            limit=limit,
-            before_id=before_id,
-        )
-
-        l1_query = select(MemsL1Episodic).where(
-            MemsL1Episodic.agent_id == request.agent_id,
-            MemsL1Episodic.session_id == request.session_id,
-        )
-        if request.before_id is not None:
-            l1_query = l1_query.where(MemsL1Episodic.id < request.before_id)
-        l1_records = session.exec(
-            _with_identity_filters(
-                l1_query.order_by(MemsL1Episodic.id.desc()).limit(request.limit + 1),
-                MemsL1Episodic,
-                request,
-            )
-        ).all()
-        l1_messages, has_more, next_before_id = _expand_l1_page(
-            l1_records, request.limit
-        )
-
-        if request.before_id is not None:
-            return MemsContextResponse(
-                tenant_id=request.tenant_id,
-                user_id=request.user_id,
-                agent_id=request.agent_id,
-                session_id=request.session_id,
-                scope=request.scope,
-                source="l1",
-                page_type="history",
-                messages=l1_messages,
-                total=len(l1_messages),
-                has_more=has_more,
-                next_before_id=next_before_id,
-                expires_at=None,
-            )
-
-        l0 = await redis.read(
-            request.agent_id,
-            request.session_id,
-            tenant_id=request.tenant_id,
-            user_id=request.user_id,
-            scope=request.scope,
-        )
-        live_messages = l0.short_term_buffer if l0 is not None else []
-        messages = _merge_live_messages(l1_messages, live_messages)
-        if live_messages and messages == live_messages:
-            source = "l0"
-        elif l1_messages and live_messages:
-            source = "mixed"
-        elif live_messages:
-            source = "l0"
-        else:
-            source = "l1"
-
-        return MemsContextResponse(
-            tenant_id=request.tenant_id,
-            user_id=request.user_id,
-            agent_id=request.agent_id,
-            session_id=request.session_id,
-            scope=l0.scope if l0 is not None else request.scope,
-            source=source,
-            page_type="live",
-            messages=messages,
-            total=len(messages),
-            has_more=has_more,
-            next_before_id=next_before_id,
-            expires_at=l0.expires_at if l0 is not None else None,
-        )
-    except Exception as e:
-        logger.error(f"Failed to get memory context: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get(
     "/status",
     response_model=MonitorStatusResponse,
     summary="System status / 系统状态",
@@ -1055,7 +783,11 @@ async def get_memory_context(
         }
     },
 )
-async def mems_status() -> MonitorStatusResponse:
+async def mems_status(
+    redis: RedisService = Depends(get_redis_service),
+    vector_service=Depends(get_vector_service),
+    session: Session = Depends(get_session),
+) -> MonitorStatusResponse:
     """Return health checks and pipeline metrics for the system.
 
     返回系统健康检查结果以及流水线关键指标。
@@ -1063,14 +795,12 @@ async def mems_status() -> MonitorStatusResponse:
     checks = {}
 
     try:
-        with Session(engine) as session:
-            session.exec(select(MemsL1Episodic).limit(1)).all()
+        session.exec(select(MemsL1Episodic).limit(1)).all()
         checks["database"] = HealthCheckItem(status="healthy")
     except Exception as exc:
         checks["database"] = HealthCheckItem(status="unhealthy", detail=str(exc))
 
     try:
-        redis = await get_redis_service()
         client = await redis.get_client()
         ping_result = client.ping()
         if inspect.isawaitable(ping_result):
@@ -1080,7 +810,6 @@ async def mems_status() -> MonitorStatusResponse:
         checks["redis"] = HealthCheckItem(status="unhealthy", detail=str(exc))
 
     try:
-        vector_service = await get_vector_service()
         await vector_service.get_collections()
         checks["qdrant"] = HealthCheckItem(status="healthy")
     except Exception as exc:
@@ -1103,48 +832,48 @@ async def mems_status() -> MonitorStatusResponse:
     except Exception as exc:
         checks["scheduler"] = HealthCheckItem(status="unhealthy", detail=str(exc))
 
-    with Session(engine) as session:
-        pending_distill = _count_rows(
-            session,
-            select(MemsL1Episodic).where(MemsL1Episodic.is_distilled == False),  # noqa: E712
-        )
-        cutoff = datetime.now(timezone.utc) - timedelta(days=settings.ARCHIVE_DAYS)
-        pending_archive = _count_rows(
-            session,
-            select(MemsL1Episodic).where(
-                MemsL1Episodic.created_at < cutoff,
-                MemsL1Episodic.is_archived == False,  # noqa: E712
-            ),
-        )
-        profile_items = _count_rows(
-            session,
-            select(MemsL2ProfileItem).where(MemsL2ProfileItem.status == "active"),
-        )
-        fact_items = _count_rows(
-            session,
-            select(MemsL2Fact).where(MemsL2Fact.status == "active"),
-        )
-        summary_items = _count_rows(session, select(MemsL2Summary))
-        conflict_count = _count_rows(session, select(MemsL2ConflictLog))
-        stale_cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_MEMORY_DAYS)
-        stale_profile_items = _count_rows(
-            session,
-            select(MemsL2ProfileItem).where(
-                MemsL2ProfileItem.status == "active",
-                MemsL2ProfileItem.last_verified_at < stale_cutoff,
-            ),
-        )
-        stale_fact_items = _count_rows(
-            session,
-            select(MemsL2Fact).where(
-                MemsL2Fact.status == "active",
-                MemsL2Fact.last_verified_at < stale_cutoff,
-            ),
-        )
-        stale_summary_items = _count_rows(
-            session,
-            select(MemsL2Summary).where(MemsL2Summary.last_verified_at < stale_cutoff),
-        )
+    # Pipeline metrics use the injected session
+    pending_distill = _count_rows(
+        session,
+        select(MemsL1Episodic).where(MemsL1Episodic.is_distilled == False),  # noqa: E712
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.ARCHIVE_DAYS)
+    pending_archive = _count_rows(
+        session,
+        select(MemsL1Episodic).where(
+            MemsL1Episodic.created_at < cutoff,
+            MemsL1Episodic.is_archived == False,  # noqa: E712
+        ),
+    )
+    profile_items = _count_rows(
+        session,
+        select(MemsL2ProfileItem).where(MemsL2ProfileItem.status == "active"),
+    )
+    fact_items = _count_rows(
+        session,
+        select(MemsL2Fact).where(MemsL2Fact.status == "active"),
+    )
+    summary_items = _count_rows(session, select(MemsL2Summary))
+    conflict_count = _count_rows(session, select(MemsL2ConflictLog))
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_MEMORY_DAYS)
+    stale_profile_items = _count_rows(
+        session,
+        select(MemsL2ProfileItem).where(
+            MemsL2ProfileItem.status == "active",
+            MemsL2ProfileItem.last_verified_at < stale_cutoff,
+        ),
+    )
+    stale_fact_items = _count_rows(
+        session,
+        select(MemsL2Fact).where(
+            MemsL2Fact.status == "active",
+            MemsL2Fact.last_verified_at < stale_cutoff,
+        ),
+    )
+    stale_summary_items = _count_rows(
+        session,
+        select(MemsL2Summary).where(MemsL2Summary.last_verified_at < stale_cutoff),
+    )
 
     statuses = {item.status for item in checks.values()}
     if "unhealthy" in statuses:

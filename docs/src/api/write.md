@@ -1,17 +1,18 @@
-# `POST /v1/mems/write`
+# `POST /v1/mems/write` — Remember
 
-Append user and assistant turns and persist the new messages into L0 and L1.
+Remember memory content into the system. Mems stores what matters — raw episodic messages or direct memory text — and leaves session state to the caller.
 
 ## Supported Fields
 
+- `content`
 - `messages`
 - `ttl_seconds`
-- `active_plan`
-- `temp_variables`
-- `metadata`
+- `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope`
 
 ## Behavior Notes
 
-- the L0 `short_term_buffer` uses a bounded sliding window
-- only newly appended messages are persisted into L1
-- successful writes return whether L1 persistence succeeded and the resulting `l1_id`
+- at least one of `content` or `messages` must be provided
+- if both are provided, `content` is used as the memory text and `messages` is preserved as structured source
+- L0 caches recent memories with a bounded sliding window and TTL
+- L1 persists a new episodic record with the full memory text and optional source messages
+- returns whether L1 persistence succeeded and the resulting `l1_id`
