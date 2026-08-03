@@ -11,7 +11,8 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from mems.database import get_session
 from mems.main import app
-from mems.services.redis_service import get_redis_service
+from mems.config import settings
+from mems.services.redis_service import build_l0_pipeline_event, get_redis_service
 from mems.services.vector_service import get_vector_service
 
 
@@ -37,6 +38,16 @@ class FakeRedisService:
             tuple[str | None, str | None, str | None, str, str | None], Any
         ] = {}
         self._client = FakeRedisClient(self)
+        self.pipeline_events: list[dict[str, str]] = []
+
+    def _publish_pipeline_event(self, l0, event_type: str) -> None:
+        """Record one L0 pipeline event when the output pipeline is enabled.
+
+        当输出管道启用时，记录一条 L0 输出事件。
+        """
+        if not settings.L0_PIPELINE_ENABLED or not settings.L0_PIPELINE_STREAM:
+            return
+        self.pipeline_events.append(build_l0_pipeline_event(l0, event_type))
 
     async def get_client(self) -> FakeRedisClient:
         """Return the fake Redis client object.
@@ -55,6 +66,7 @@ class FakeRedisService:
         content: str | None = None,
         scope: str | None = None,
         ttl_seconds: int = 1800,
+        event_type: str = "write",
     ):
         """Store one L0 snapshot in the in-memory test backend.
 
@@ -73,6 +85,7 @@ class FakeRedisService:
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         )
         self._store[(tenant_id, user_id, scope, agent_id, session_id)] = l0
+        self._publish_pipeline_event(l0, event_type)
         return l0
 
     async def read(
@@ -144,6 +157,7 @@ class FakeRedisService:
             content=content if content is not None else existing.content,
             scope=scope if scope is not None else existing.scope,
             ttl_seconds=ttl_seconds,
+            event_type="append",
         )
 
 

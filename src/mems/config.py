@@ -86,6 +86,12 @@ class Settings(BaseSettings):
 
     L0_DEFAULT_TTL_SECONDS: int = 1800
 
+    # L0 Memory Output Pipeline (Redis Stream, disabled by default)
+    # 用户可用自己的代码消费记忆事件；默认关闭，开启后每次 L0 写入/追加会发布一条事件。
+    L0_PIPELINE_ENABLED: bool = False
+    L0_PIPELINE_STREAM: str = "mems:l0:events"
+    L0_PIPELINE_MAXLEN: int = 10000
+
     # Storage paths
     @property
     def storage_l3_path(self) -> Path:

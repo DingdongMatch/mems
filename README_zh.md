@@ -79,6 +79,28 @@ curl -X POST http://localhost:8210/v1/mems/query \
   }'
 ```
 
+## L0 记忆输出管道
+
+Mems 可以把每一次 L0 记忆写入作为事件发布到 Redis Stream，让你用自己的代码
+消费记忆（镜像、看板、下游工作流）。管道**默认关闭**：
+
+```bash
+L0_PIPELINE_ENABLED=true        # 默认：false
+L0_PIPELINE_STREAM=mems:l0:events
+L0_PIPELINE_MAXLEN=10000
+```
+
+使用任意 Redis 客户端消费：
+
+```bash
+redis-cli XREAD COUNT 10 STREAMS mems:l0:events 0
+```
+
+每条事件包含 `event_type`（`write`/`append`）、身份字段、`content` 快照以及
+JSON 编码的 `messages` 缓冲区。发布是尽力而为的：流失败不会阻断
+`POST /v1/mems/write`。完整格式与消费组示例见
+[L0 输出管道](docs/src/zh/integration/l0-pipeline.md)。
+
 ## 📊 性能表现
 
 基于 **RAGAS** 的最新基准测试报告显示（`2026-04-05`）：

@@ -79,6 +79,30 @@ curl -X POST http://localhost:8210/v1/mems/query \
   }'
 ```
 
+## L0 Memory Output Pipeline
+
+Mems can publish every L0 memory write as an event to a Redis Stream, so you can
+consume memories with your own code (mirroring, dashboards, downstream
+workflows). The pipeline is **disabled by default**:
+
+```bash
+L0_PIPELINE_ENABLED=true        # default: false
+L0_PIPELINE_STREAM=mems:l0:events
+L0_PIPELINE_MAXLEN=10000
+```
+
+Consume with any Redis client:
+
+```bash
+redis-cli XREAD COUNT 10 STREAMS mems:l0:events 0
+```
+
+Each event carries `event_type` (`write`/`append`), the identity fields, the
+`content` snapshot, and a JSON-encoded `messages` buffer. Publication is
+best-effort: a stream failure never blocks `POST /v1/mems/write`. See
+[L0 Output Pipeline](docs/src/integration/l0-pipeline.md) for the full format
+and consumer-group examples.
+
 ## Performance
 
 Latest full evaluation based on **RAGAS** (`2026-04-05`):

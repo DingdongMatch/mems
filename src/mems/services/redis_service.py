@@ -1,9 +1,61 @@
 from datetime import datetime, timedelta, timezone
+import json
+import logging
 from typing import Optional, List, Dict
+from uuid import uuid4
 import redis.asyncio as redis
 
 from mems.config import settings
-from mems.schemas import MemsL0Working
+from mems.schemas import MemsL0Working, MemoryPipelineEvent
+
+
+logger = logging.getLogger(__name__)
+
+
+def build_l0_pipeline_event(
+    l0_data: MemsL0Working, event_type: str
+) -> Dict[str, str]:
+    """Build the flat field map for one L0 output-stream event.
+
+    构建一条 L0 输出流事件的扁平字段映射。Redis Stream 存储扁平键值对，
+    事件先按 MemoryPipelineEvent 校验，再扁平化为字符串字段；未设置的身份字段
+    为空字符串，嵌套结构（如 messages）为 JSON 字符串。
+    """
+    event = MemoryPipelineEvent(
+        event_id=uuid4().hex,
+        event_type=event_type,
+        timestamp=datetime.now(timezone.utc),
+        tenant_id=l0_data.tenant_id,
+        user_id=l0_data.user_id,
+        agent_id=l0_data.agent_id,
+        session_id=l0_data.session_id,
+        scope=l0_data.scope,
+        content=l0_data.content,
+        messages=json.dumps(l0_data.short_term_buffer, ensure_ascii=False),
+        expires_at=l0_data.expires_at,
+    )
+    raw = event.model_dump(mode="json")
+    return {key: (value if value is not None else "") for key, value in raw.items()}
+
+
+async def publish_l0_event(client, event: Dict[str, str]) -> None:
+    """Publish one event to the L0 output stream when the pipeline is enabled.
+
+    当输出管道启用时，向 L0 输出流发布一条事件。发布是尽力而为的：
+    失败只记录警告，绝不阻断记忆写入本身。
+    """
+    if not settings.L0_PIPELINE_ENABLED or not settings.L0_PIPELINE_STREAM:
+        return
+    try:
+        await client.xadd(
+            settings.L0_PIPELINE_STREAM,
+            event,
+            id="*",
+            maxlen=settings.L0_PIPELINE_MAXLEN,
+            approximate=True,
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to publish L0 pipeline event: {exc}")
 
 
 class RedisService:
@@ -61,6 +113,7 @@ class RedisService:
         content: Optional[str] = None,
         scope: Optional[str] = None,
         ttl_seconds: int = 1800,
+        event_type: str = "write",
     ) -> MemsL0Working:
         """Write the current hot-memory snapshot into Redis.
 
@@ -85,6 +138,9 @@ class RedisService:
             key,
             l0_data.model_dump_json(),
             ex=ttl_seconds,
+        )
+        await publish_l0_event(
+            client, build_l0_pipeline_event(l0_data, event_type)
         )
         return l0_data
 
@@ -163,6 +219,7 @@ class RedisService:
                 l0.model_dump_json(),
                 ex=ttl,
             )
+            await publish_l0_event(client, build_l0_pipeline_event(l0, "append"))
         return l0
 
     async def append_messages(
@@ -221,6 +278,7 @@ class RedisService:
             content=merged_content,
             scope=merged_scope,
             ttl_seconds=effective_ttl,
+            event_type="append",
         )
 
     async def close(self):

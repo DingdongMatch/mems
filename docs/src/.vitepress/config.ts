@@ -41,7 +41,8 @@ export default defineConfig({
               text: 'Integration',
               items: [
                 { text: 'Overview', link: '/integration/overview' },
-                { text: 'Identity Model', link: '/integration/identity-model' }
+                { text: 'Identity Model', link: '/integration/identity-model' },
+                { text: 'L0 Output Pipeline', link: '/integration/l0-pipeline' }
               ]
             },
             {
@@ -96,7 +97,8 @@ export default defineConfig({
               text: '接入指南',
               items: [
                 { text: '接入总览', link: '/zh/integration/overview' },
-                { text: 'Identity Model', link: '/zh/integration/identity-model' }
+                { text: 'Identity Model', link: '/zh/integration/identity-model' },
+                { text: 'L0 输出管道', link: '/zh/integration/l0-pipeline' }
               ]
             },
             {
