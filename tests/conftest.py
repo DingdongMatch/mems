@@ -381,6 +381,9 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "mems.services.l0_sync.get_embedding_service", get_fake_embedding_service
     )
+    monkeypatch.setattr(
+        "mems.services.embedding.get_embedding_service", get_fake_embedding_service
+    )
 
     monkeypatch.setattr("mems.services.distill.llm_chat", fake_llm_chat)
     monkeypatch.setattr("mems.services.distill.engine", engine)

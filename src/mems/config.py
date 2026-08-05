@@ -77,10 +77,10 @@ class Settings(BaseSettings):
 
     # Scheduler
     SCHEDULER_ENABLED: bool = True
-    DISTILL_CRON_HOUR: int = 2
-    DISTILL_CRON_MINUTE: int = 0
     DISTILL_THRESHOLD: int = 100
     DISTILL_BATCH_SIZE: int = 50
+    DISTILL_HIGH_IMPORTANCE_THRESHOLD: float = 0.8
+    DISTILL_IMMEDIATE_BATCH_SIZE: int = 1
     ARCHIVE_CRON_HOUR: int = 3
     ARCHIVE_CRON_MINUTE: int = 0
 

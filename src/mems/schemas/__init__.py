@@ -97,6 +97,17 @@ class MemsWriteRequest(BaseModel):
     ttl_seconds: int = Field(
         default=1800, ge=1, le=604800, description="L0 TTL，单位秒"
     )
+    importance_score: float = Field(
+        default=0.5,
+        ge=0,
+        le=1,
+        description=(
+            "Memory importance used for distillation priority. "
+            "Records at or above DISTILL_HIGH_IMPORTANCE_THRESHOLD are distilled "
+            "immediately after write. / 记忆重要度，用于蒸馏优先级；达到"
+            "DISTILL_HIGH_IMPORTANCE_THRESHOLD 的记录写入后立即蒸馏。"
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_memory_payload(self) -> "MemsWriteRequest":
@@ -165,6 +176,10 @@ class MemsWriteResponse(BaseModel):
     # Soft visibility tag echoed back to the caller.
     # 回传给调用方的软可见性标签。
     scope: Optional[str] = None
+    importance_score: float = Field(
+        default=0.5,
+        description="Memory importance echoed back to the caller. / 回传的记忆重要度。",
+    )
     content: str
     messages: List[Dict[str, str]] = Field(default_factory=list)
     appended_count: int = Field(

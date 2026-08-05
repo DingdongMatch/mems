@@ -31,6 +31,10 @@ from mems.services.vector_service import get_vector_service
 
 logger = logging.getLogger(__name__)
 
+# Guards threshold-triggered distillation so only one run is active per process.
+# 防止阈值触发的蒸馏在单进程内并发执行，保证同一时刻只有一个运行实例。
+_distill_in_progress = False
+
 MULTI_VALUE_PREDICATES = {
     "喜欢",
     "讨厌",
@@ -561,6 +565,14 @@ class DistillService:
                 MemsL1Episodic.is_distilled == False,  # noqa: E712
                 MemsL1Episodic.importance_score >= 0.5,
             )
+            query = query.order_by(
+                MemsL1Episodic.importance_score.desc(),  # type: ignore[attr-defined]
+                MemsL1Episodic.created_at.asc(),  # type: ignore[attr-defined]
+            )
+        else:
+            query = query.order_by(
+                MemsL1Episodic.created_at.asc()  # type: ignore[attr-defined]
+            )
 
         l1_records = self.session.exec(query.limit(batch_size)).all()
         if not l1_records:
@@ -675,6 +687,69 @@ def check_distill_threshold() -> int:
             )
         ).all()
         return len(records)
+
+
+async def _run_distill_if_idle(work) -> Dict[str, Any]:
+    """Run a distillation work item, skipping when one is already running.
+
+    若已有蒸馏正在运行则直接跳过，否则执行给定的蒸馏工作项。
+    """
+    global _distill_in_progress
+    if _distill_in_progress:
+        return {
+            "triggered": False,
+            "reason": "distill already running",
+            "processed": 0,
+        }
+    _distill_in_progress = True
+    try:
+        return await work()
+    finally:
+        _distill_in_progress = False
+
+
+async def trigger_distill_if_due() -> Dict[str, Any]:
+    """Trigger distillation when the pending threshold is reached.
+
+    当未蒸馏记录达到阈值时触发蒸馏。该函数由写入路径以后台任务方式调用，
+    无定时任务依赖；若已有蒸馏正在运行则直接跳过。
+    """
+    return await _run_distill_if_idle(trigger_distill_automatically)
+
+
+async def distill_high_value_if_idle(agent_id: str) -> Dict[str, Any]:
+    """Immediately distill the top-priority pending record for one agent.
+
+    对指定 agent 立即蒸馏一条最高优先级的未蒸馏记录（batch 由
+    DISTILL_IMMEDIATE_BATCH_SIZE 控制，配合批内排序优先处理高价值记录）。
+    """
+
+    async def work() -> Dict[str, Any]:
+        try:
+            from mems.services.embedding import get_embedding_service
+
+            embedding_service = await get_embedding_service()
+            with Session(engine) as session:
+                result = await DistillService(session).distill(
+                    agent_id=agent_id,
+                    batch_size=settings.DISTILL_IMMEDIATE_BATCH_SIZE,
+                    force=False,
+                    embedding_service=embedding_service,
+                )
+            logger.info(
+                f"High-value distill for {agent_id}: "
+                f"processed {result.distilled_count} records"
+            )
+            return {
+                "triggered": True,
+                "agent_id": agent_id,
+                "processed": result.distilled_count,
+            }
+        except Exception as exc:
+            logger.error(f"High-value distill failed for {agent_id}: {exc}")
+            return {"triggered": False, "error": str(exc), "processed": 0}
+
+    return await _run_distill_if_idle(work)
 
 
 async def trigger_distill_automatically(

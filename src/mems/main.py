@@ -22,21 +22,17 @@ async def lifespan(app: FastAPI):
     Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
 
     if settings.SCHEDULER_ENABLED:
-        from mems.services.distill import trigger_distill_automatically
         from mems.services.archive import trigger_archive_automatically
 
-        scheduler_service.add_distill_job(
-            trigger_distill_automatically,
-            hour=settings.DISTILL_CRON_HOUR,
-            minute=settings.DISTILL_CRON_MINUTE,
-        )
         scheduler_service.add_archive_job(
             trigger_archive_automatically,
             hour=settings.ARCHIVE_CRON_HOUR,
             minute=settings.ARCHIVE_CRON_MINUTE,
         )
         scheduler_service.start()
-        logger.info("Scheduler started with distill and archive jobs")
+        logger.info(
+            "Scheduler started with archive job (distill is threshold-triggered)"
+        )
 
     yield
 

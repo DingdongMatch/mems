@@ -4,7 +4,7 @@ import inspect
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 from sqlalchemy import func
 from sqlmodel import Session, select
 
@@ -28,6 +28,7 @@ from mems.schemas import (
     MonitorStatusResponse,
     QueryResultItem,
 )
+from mems.services.distill import distill_high_value_if_idle, trigger_distill_if_due
 from mems.services.embedding import get_embedding_service
 from mems.services.l0_sync import sync_l0_to_l1
 from mems.services.redis_service import RedisService, get_redis_service
@@ -59,6 +60,7 @@ WRITE_MEMORY_EXAMPLE = {
             {"role": "assistant", "content": "Stored. I will keep replies concise."},
         ],
         "ttl_seconds": 1800,
+        "importance_score": 0.5,
     },
 }
 
@@ -84,6 +86,7 @@ WRITE_MEMORY_RESPONSE_EXAMPLE = {
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
                 "scope": "private",
+                "importance_score": 0.5,
                 "content": "The user likes Rust and concise answers.",
                 "messages": [
                     {
@@ -179,6 +182,7 @@ TURN_WRITE_RESPONSE_EXAMPLE = {
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
                 "scope": "private",
+                "importance_score": 0.5,
                 "content": "user: Please answer in Chinese.\nassistant: 好的，我会继续使用中文回答。",
                 "messages": [
                     {"role": "user", "content": "Please answer in Chinese."},
@@ -418,6 +422,7 @@ async def write_memory(
     request: MemsWriteRequest = Body(openapi_examples={"basic": WRITE_MEMORY_EXAMPLE}),
     redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
 ):
     """Remember content into L0 and persist a new L1 record.
 
@@ -441,9 +446,21 @@ async def write_memory(
         l1_id = await sync_l0_to_l1(
             l0_data=l0.model_copy(update={"short_term_buffer": new_messages}),
             session=session,
-            importance_score=0.5,
+            importance_score=request.importance_score,
         )
         persisted = l1_id is not None
+        if persisted:
+            # Distillation runs in the background after the response is sent.
+            # High-importance records are distilled immediately (batch=1);
+            # everything else follows the global threshold check.
+            # 蒸馏在响应返回后在后台执行：高价值记录即时蒸馏（batch=1），
+            # 其余记录走全局阈值检查。
+            if request.importance_score >= settings.DISTILL_HIGH_IMPORTANCE_THRESHOLD:
+                background_tasks.add_task(
+                    distill_high_value_if_idle, request.agent_id
+                )
+            else:
+                background_tasks.add_task(trigger_distill_if_due)
 
         return MemsWriteResponse(
             success=True,
@@ -452,6 +469,7 @@ async def write_memory(
             agent_id=l0.agent_id,
             session_id=l0.session_id,
             scope=l0.scope,
+            importance_score=request.importance_score,
             content=memory_content,
             messages=new_messages,
             appended_count=len(new_messages),
@@ -821,8 +839,6 @@ async def mems_status(
         details = []
         if not scheduler.running:
             details.append("scheduler stopped")
-        if scheduler.get_job("distill_job") is None:
-            details.append("distill job missing")
         if scheduler.get_job("archive_job") is None:
             details.append("archive job missing")
 

@@ -54,20 +54,6 @@ class SchedulerService:
             self._scheduler.shutdown()
             logger.info("Scheduler stopped")
 
-    def add_distill_job(self, func, hour: int = 2, minute: int = 0):
-        """Schedule the daily distillation job.
-
-        注册每日蒸馏定时任务。
-        """
-        self._scheduler.add_job(
-            func,
-            CronTrigger(hour=hour, minute=minute),
-            id="distill_job",
-            name="Memory Distillation",
-            replace_existing=True,
-        )
-        logger.info(f"Distill job scheduled at {hour:02d}:{minute:02d}")
-
     def add_archive_job(self, func, hour: int = 3, minute: int = 0):
         """Schedule the daily archive job.
 
