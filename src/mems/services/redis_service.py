@@ -164,6 +164,40 @@ class RedisService:
             return MemsL0Working.model_validate_json(data)
         return None
 
+    async def list_active(
+        self,
+        agent_id: str,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        scope: Optional[str] = None,
+        limit: int = 10,
+    ) -> List[MemsL0Working]:
+        """List active L0 snapshots for one agent across sessions.
+
+        列出某个 agent 跨会话的活跃 L0 快照。未提供的身份字段不参与过滤
+        （与 SQL 查询语义一致）；结果按过期时间倒序（新快照优先），最多返回
+        ``limit`` 条。
+        """
+        client = await self.get_client()
+        tenant_part = tenant_id if tenant_id is not None else "*"
+        user_part = user_id if user_id is not None else "*"
+        scope_part = scope if scope is not None else "*"
+        pattern = f"mems:l0:{tenant_part}:{user_part}:{scope_part}:{agent_id}:*"
+
+        snapshots: List[MemsL0Working] = []
+        async for key in client.scan_iter(match=pattern, count=100):
+            data = await client.get(key)
+            if not data:
+                continue
+            try:
+                snapshots.append(MemsL0Working.model_validate_json(data))
+            except Exception:
+                logger.warning(f"Skipping malformed L0 snapshot at {key}")
+                continue
+
+        snapshots.sort(key=lambda item: item.expires_at, reverse=True)
+        return snapshots[:limit]
+
     async def delete(
         self,
         agent_id: str,

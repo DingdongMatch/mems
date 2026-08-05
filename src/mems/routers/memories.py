@@ -260,17 +260,70 @@ SOURCE_INTENT = {
 }
 
 
-def _keyword_score(query: str, text: str, base_score: float) -> float:
-    """Blend lexical term overlap into a base retrieval score.
+def _tokenize_terms(text: str) -> set[str]:
+    """Split text into lexical terms: ASCII words plus CJK character bigrams.
 
-    将关键词重叠度叠加到基础检索分数上。
+    将文本切分为词法单元：ASCII 整词 + 中文相邻双字（bigram），
+    避免无空格中文在 `\\W+` 切分下退化成整串单 token。
     """
-    query_terms = {term for term in re.split(r"\W+", query.lower()) if term}
-    text_terms = {term for term in re.split(r"\W+", text.lower()) if term}
-    overlap = len(query_terms & text_terms)
+    lowered = text.lower()
+    tokens = set(re.findall(r"[a-z0-9_]+", lowered))
+    cjk = "".join(ch for ch in lowered if "\u4e00" <= ch <= "\u9fff")
+    tokens.update(cjk[i : i + 2] for i in range(len(cjk) - 1))
+    return tokens
+
+
+def _lexical_overlap(query: str, text: str) -> float:
+    """Return the 0-1 lexical overlap ratio between query and text.
+
+    返回查询与文本之间的 0-1 词法重叠率。
+    """
+    query_terms = _tokenize_terms(query)
     if not query_terms:
-        return base_score
-    return base_score + overlap / max(len(query_terms), 1)
+        return 0.0
+    text_terms = _tokenize_terms(text)
+    return len(query_terms & text_terms) / len(query_terms)
+
+
+def _clip01(value: float) -> float:
+    """Clamp a value into the 0-1 range for score normalization.
+
+    将数值裁剪到 0-1 区间，用于分数归一化。
+    """
+    return max(0.0, min(1.0, value))
+
+
+def _l1_base(vector_score: float, lexical: float) -> float:
+    """Normalized L1 episodic base score in 0-1."""
+    return 0.6 * _clip01(vector_score) + 0.4 * lexical
+
+
+def _l2_entity_base(confidence: float, lexical: float) -> float:
+    """Normalized L2 profile/fact base score in 0-1."""
+    return 0.7 * _clip01(confidence) + 0.3 * lexical
+
+
+def _l2_event_base(importance: int, lexical: float) -> float:
+    """Normalized L2 event base score in 0-1."""
+    return 0.6 * _clip01(importance / 10.0) + 0.4 * lexical
+
+
+def _l2_summary_base(lexical: float, vector_score: float) -> float:
+    """Normalized L2 summary base score in 0-1."""
+    return max(lexical, 0.6 * _clip01(vector_score))
+
+
+def _sort_results(results: list[QueryResultItem]) -> list[QueryResultItem]:
+    """Sort results by score desc, then created_at desc for deterministic order.
+
+    按分数降序、创建时间降序排序，保证同分结果顺序确定。
+    """
+    epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+    return sorted(
+        results,
+        key=lambda item: (item.score, item.created_at or epoch),
+        reverse=True,
+    )
 
 
 def _detect_query_intents(query: str) -> set[str]:
@@ -517,22 +570,25 @@ async def search_memory(
     try:
         query_intents = _detect_query_intents(request.query)
 
-        # ---- L0 hot memory cache ----
-        l0 = await redis.read(
+        # ---- L0 hot memory cache (active snapshots across sessions) ----
+        results: list[QueryResultItem] = []
+        l0_snapshots = await redis.list_active(
             request.agent_id,
             tenant_id=request.tenant_id,
             user_id=request.user_id,
             scope=request.scope,
+            limit=settings.L0_RECALL_MAX_SNAPSHOTS,
         )
-        results: list[QueryResultItem] = []
-        if l0 and l0.content:
-            l0_score = _keyword_score(request.query, l0.content, 0.7)
-            if l0_score > 0:
+        for l0 in l0_snapshots:
+            if not l0.content:
+                continue
+            base = 0.7 * _lexical_overlap(request.query, l0.content)
+            if base > 0:
                 results.append(
                     QueryResultItem(
                         source="l0_hot",
                         content=l0.content,
-                        score=l0_score,
+                        score=base + _intent_bonus("l0_hot", query_intents),
                         session_id=l0.session_id,
                         tenant_id=l0.tenant_id,
                         user_id=l0.user_id,
@@ -620,7 +676,10 @@ async def search_memory(
                     source="l1_episodic",
                     content=l1_record.content,
                     score=_rank_score(
-                        result["score"],
+                        _l1_base(
+                            result["score"],
+                            _lexical_overlap(request.query, l1_record.content),
+                        ),
                         "l1_episodic",
                         l1_record.created_at,
                         query_intents,
@@ -653,10 +712,12 @@ async def search_memory(
                     source="l2_profile",
                     content=f"{item.category} {item.key} {item.value}",
                     score=_rank_verified_score(
-                        _keyword_score(
-                            request.query,
-                            f"{item.category} {item.key} {item.value}",
+                        _l2_entity_base(
                             item.confidence,
+                            _lexical_overlap(
+                                request.query,
+                                f"{item.category} {item.key} {item.value}",
+                            ),
                         ),
                         "l2_profile",
                         item.last_verified_at,
@@ -691,7 +752,10 @@ async def search_memory(
                     source="l2_fact",
                     content=fact_text,
                     score=_rank_verified_score(
-                        _keyword_score(request.query, fact_text, item.confidence),
+                        _l2_entity_base(
+                            item.confidence,
+                            _lexical_overlap(request.query, fact_text),
+                        ),
                         "l2_fact",
                         item.last_verified_at,
                         item.last_verified_at,
@@ -722,10 +786,9 @@ async def search_memory(
                     source="l2_event",
                     content=event_text,
                     score=_rank_score(
-                        _keyword_score(
-                            request.query,
-                            event_text,
-                            min(item.importance_score / 10.0, 1.0),
+                        _l2_event_base(
+                            item.importance_score,
+                            _lexical_overlap(request.query, event_text),
                         ),
                         "l2_event",
                         item.created_at,
@@ -750,17 +813,18 @@ async def search_memory(
             )
         ).all()
         for item in summary_items:
-            summary_score = _keyword_score(request.query, item.content, 0.6)
+            summary_vector_score = 0.0
             if item.vector_id and item.vector_id in summary_vector_scores:
-                summary_score = max(
-                    summary_score, summary_vector_scores[item.vector_id] + 0.15
-                )
+                summary_vector_score = summary_vector_scores[item.vector_id]
             results.append(
                 QueryResultItem(
                     source="l2_summary",
                     content=item.content,
                     score=_rank_verified_score(
-                        summary_score,
+                        _l2_summary_base(
+                            _lexical_overlap(request.query, item.content),
+                            summary_vector_score,
+                        ),
                         "l2_summary",
                         item.created_at,
                         item.last_verified_at,
@@ -774,8 +838,7 @@ async def search_memory(
                 )
             )
 
-        results.sort(key=lambda item: item.score, reverse=True)
-        results = results[: request.top_k]
+        results = _sort_results(results)[: request.top_k]
 
         return MemsQueryResponse(
             query=request.query,

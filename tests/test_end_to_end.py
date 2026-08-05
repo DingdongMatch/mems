@@ -155,7 +155,7 @@ def test_memory_pipeline_end_to_end(test_app):
             "/v1/mems/query",
             json={
                 "agent_id": "agent_test",
-                "query": "Give me a summary of recent focus",
+                "query": "long term summary of recent focus",
                 "top_k": 5,
             },
         )

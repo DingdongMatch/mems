@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, List, Dict
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ===================
@@ -30,6 +30,7 @@ class MemsQueryRequest(BaseModel):
         description="Soft visibility tag for filtering. / 用于过滤的软可见性标签。",
     )
     query: str = Field(
+        min_length=1,
         description="User search query. / 用户检索查询内容。",
         examples=["What does the user like?"],
     )
@@ -39,6 +40,18 @@ class MemsQueryRequest(BaseModel):
         le=100,
         description="返回结果数。默认搜索仅覆盖活跃 L1 与 L2，不包含已归档 L1。",
     )
+
+    @field_validator("query")
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        """Reject blank search queries.
+
+        拒绝空白检索查询。
+        """
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("query must not be blank")
+        return stripped
 
 
 class MemsMessage(BaseModel):

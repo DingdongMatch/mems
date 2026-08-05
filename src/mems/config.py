@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     ARCHIVE_CRON_MINUTE: int = 0
 
     L0_DEFAULT_TTL_SECONDS: int = 1800
+    # Max active L0 snapshots recalled per agent in a query.
+    # 查询时每个 agent 最多召回的活跃 L0 快照数。
+    L0_RECALL_MAX_SNAPSHOTS: int = 10
 
     # L0 Memory Output Pipeline (Redis Stream, disabled by default)
     # 用户可用自己的代码消费记忆事件；默认关闭，开启后每次 L0 写入/追加会发布一条事件。

@@ -102,6 +102,32 @@ class FakeRedisService:
         """
         return self._store.get((tenant_id, user_id, scope, agent_id, session_id))
 
+    async def list_active(
+        self,
+        agent_id: str,
+        tenant_id: str | None = None,
+        user_id: str | None = None,
+        scope: str | None = None,
+        limit: int = 10,
+    ):
+        """List active L0 snapshots for one agent across sessions.
+
+        列出某个 agent 跨会话的活跃 L0 快照（镜像真实 RedisService 语义）。
+        """
+        snapshots = []
+        for (t, u, s, a, _session), l0 in self._store.items():
+            if a != agent_id:
+                continue
+            if tenant_id is not None and t != tenant_id:
+                continue
+            if user_id is not None and u != user_id:
+                continue
+            if scope is not None and s != scope:
+                continue
+            snapshots.append(l0)
+        snapshots.sort(key=lambda item: item.expires_at, reverse=True)
+        return snapshots[:limit]
+
     async def delete(
         self,
         agent_id: str,
