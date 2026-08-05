@@ -23,11 +23,13 @@ Unlike a single-layer vector database or basic RAG stack, Mems is designed to co
 
 ```text
 Third-party Agent
-  |-- GET /v1/mems/context --> L0 Redis
-  |-- POST /v1/mems/query --> L1 + L2 Recall
-  `-- POST /v1/mems/write --> L1 SQL + Qdrant
-                                  |-- L2 Distilled Memory
-                                  `-- L3 JSONL Archive
+  |-- POST /v1/mems/write --> L0 Redis (hot memory)
+  |                           |-- L0 output pipeline (off by default) --> Redis Stream for your own code
+  |                           `-- L1 SQL + Qdrant (episodic ledger)
+  |                                |-- L2 distilled knowledge (profiles/facts/events/summaries)
+  |                                `-- L3 JSONL archive
+  |-- POST /v1/mems/query --> L0 + L1 + L2 hybrid recall
+  `-- GET /v1/mems/status | /v1/mems/health --> health and pipeline metrics
 ```
 
 ## Quick Start

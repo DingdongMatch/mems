@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="1060" viewBox="0 0 980 1060" font-family="system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow-solid" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#37474f"/>
+    </marker>
+    <marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7b52c9"/>
+    </marker>
+    <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1e88e5"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="490" y="30" text-anchor="middle" font-size="20" font-weight="700" fill="#263238">Mems 四层冷热解耦记忆架构</text>
+
+  <!-- Caller -->
+  <rect x="230" y="50" width="520" height="78" rx="10" fill="#fffde7" stroke="#f0a800" stroke-width="1.5"/>
+  <text x="490" y="75" text-anchor="middle" font-size="15" font-weight="700" fill="#263238">第三方 Agent / 上层业务</text>
+  <text x="490" y="98" text-anchor="middle" font-size="12.5" fill="#455a64">调用方负责会话上下文、prompt 组装与运行时状态</text>
+
+  <!-- API layer -->
+  <rect x="140" y="168" width="700" height="100" rx="10" fill="#f5f5f5" stroke="#424242" stroke-width="1.5"/>
+  <text x="490" y="192" text-anchor="middle" font-size="15" font-weight="700" fill="#263238">Mems API · FastAPI（/v1/mems/*）</text>
+  <text x="490" y="214" text-anchor="middle" font-size="12.5" fill="#455a64">POST /write 写入 · POST /query 跨 L0/L1/L2 混合召回 · GET /status · GET /health</text>
+  <text x="490" y="236" text-anchor="middle" font-size="12.5" fill="#455a64">依赖注入：Session · RedisService · VectorService · EmbeddingService</text>
+
+  <!-- Write path arrow -->
+  <line x1="490" y1="268" x2="490" y2="305" stroke="#37474f" stroke-width="2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="292" font-size="11.5" fill="#37474f">写入路径</text>
+
+  <!-- L0 -->
+  <rect x="120" y="308" width="540" height="130" rx="10" fill="#fff3e0" stroke="#e07b00" stroke-width="1.5"/>
+  <text x="390" y="330" text-anchor="middle" font-size="15" font-weight="700" fill="#7a4a00">L0 热记忆缓存 · Redis</text>
+  <text x="390" y="354" text-anchor="middle" font-size="12.5" fill="#5d4037">mems:l0:* 会话快照（TTL 默认 1800s）· short_term_buffer</text>
+  <text x="390" y="376" text-anchor="middle" font-size="12.5" fill="#5d4037">快速召回窗口 · 不管理运行时状态</text>
+  <text x="390" y="404" text-anchor="middle" font-size="12.5" font-weight="600" fill="#7b52c9">L0 输出管道（默认关闭）→ mems:l0:events</text>
+
+  <!-- Consumer -->
+  <rect x="700" y="308" width="240" height="118" rx="10" fill="#e8f5e9" stroke="#2e7d32" stroke-width="1.5"/>
+  <text x="820" y="330" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1b5e20">外部消费者 · 用户自己的代码</text>
+  <text x="820" y="352" text-anchor="middle" font-size="12" fill="#2e7d32">XREAD / XREADGROUP</text>
+  <text x="820" y="372" text-anchor="middle" font-size="12" fill="#2e7d32">镜像、实时看板、下游工作流</text>
+  <text x="820" y="394" text-anchor="middle" font-size="12" fill="#2e7d32">启用：L0_PIPELINE_ENABLED=true</text>
+  <text x="820" y="414" text-anchor="middle" font-size="11.5" fill="#33691e">任意语言 Redis 客户端</text>
+
+  <!-- Pipeline stream arrow -->
+  <line x1="660" y1="380" x2="698" y2="380" stroke="#7b52c9" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-purple)"/>
+  <text x="678" y="372" text-anchor="middle" font-size="11" fill="#7b52c9">事件流</text>
+
+  <!-- L0 -> L1 -->
+  <line x1="490" y1="438" x2="490" y2="475" stroke="#37474f" stroke-width="2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="462" font-size="11.5" fill="#37474f">sync_l0_to_l1 实时双写</text>
+
+  <!-- L1 -->
+  <rect x="120" y="478" width="540" height="120" rx="10" fill="#eef6ff" stroke="#2f6fb3" stroke-width="1.5"/>
+  <text x="390" y="500" text-anchor="middle" font-size="15" font-weight="700" fill="#123c66">L1 情景记忆账本 · SQL + Qdrant</text>
+  <text x="390" y="524" text-anchor="middle" font-size="12.5" fill="#29435c">mems_l1_episodic：原文 content + 来源消息 + 向量副本</text>
+  <text x="390" y="546" text-anchor="middle" font-size="12.5" fill="#29435c">Qdrant 集合 agent_{agent_id}（派生副本，best-effort）</text>
+  <text x="390" y="568" text-anchor="middle" font-size="12.5" fill="#29435c">vector_status / archive_status 副本状态机</text>
+
+  <!-- L1 -> L2 -->
+  <line x1="490" y1="598" x2="490" y2="645" stroke="#37474f" stroke-width="2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="628" font-size="11.5" fill="#37474f">蒸馏 · 每日 2:00 / 未蒸馏 &gt; 100</text>
+
+  <!-- L2 -->
+  <rect x="120" y="648" width="540" height="150" rx="10" fill="#f3eefb" stroke="#7b52c9" stroke-width="1.5"/>
+  <text x="390" y="670" text-anchor="middle" font-size="15" font-weight="700" fill="#4a2f8f">L2 蒸馏知识 · SQL</text>
+  <text x="390" y="694" text-anchor="middle" font-size="12.5" fill="#4a3563">画像 mems_l2_profile_item · 事实 mems_l2_fact</text>
+  <text x="390" y="716" text-anchor="middle" font-size="12.5" fill="#4a3563">事件 mems_l2_event · 摘要 mems_l2_summary（向量索引）</text>
+  <text x="390" y="738" text-anchor="middle" font-size="12.5" fill="#4a3563">冲突日志 mems_l2_conflict_log · 版本链与证据溯源</text>
+  <text x="390" y="762" text-anchor="middle" font-size="11.5" fill="#6d5a8f">蒸馏依赖 OpenAI-compatible LLM，无密钥时跳过</text>
+
+  <!-- L2 -> L3 -->
+  <line x1="490" y1="798" x2="490" y2="845" stroke="#37474f" stroke-width="2" marker-end="url(#arrow-solid)"/>
+  <text x="500" y="828" font-size="11.5" fill="#37474f">归档 · 每日 3:00 / ARCHIVE_DAYS</text>
+
+  <!-- L3 -->
+  <rect x="120" y="848" width="540" height="110" rx="10" fill="#eceff1" stroke="#546e7a" stroke-width="1.5"/>
+  <text x="390" y="870" text-anchor="middle" font-size="15" font-weight="700" fill="#37474f">L3 跨世纪冷归档 · JSONL</text>
+  <text x="390" y="894" text-anchor="middle" font-size="12.5" fill="#455a64">storage/l3_archive/*.jsonl（Text-First，可移植）</text>
+  <text x="390" y="916" text-anchor="middle" font-size="12.5" fill="#455a64">mems_l3_archive 批次元数据 · 对抗硬件更迭与格式淘汰</text>
+
+  <!-- Support panel -->
+  <rect x="700" y="478" width="270" height="300" rx="10" fill="#f7f2ea" stroke="#8d6e63" stroke-width="1.5"/>
+  <text x="835" y="500" text-anchor="middle" font-size="14" font-weight="700" fill="#4e342e">支撑服务</text>
+  <text x="720" y="524" font-size="12" fill="#5d4037">· APScheduler 定时调度</text>
+  <text x="736" y="544" font-size="11.5" fill="#795548">蒸馏：阈值 + 高价值即时 · 归档：3:00</text>
+  <text x="720" y="568" font-size="12" fill="#5d4037">· Embedding 抽象层</text>
+  <text x="736" y="588" font-size="11.5" fill="#795548">sentence-transformers / openai</text>
+  <text x="720" y="612" font-size="12" fill="#5d4037">· LLM Client（OpenAI-compatible）</text>
+  <text x="736" y="632" font-size="11.5" fill="#795548">蒸馏提取 + 冲突对账</text>
+  <text x="720" y="656" font-size="12" fill="#5d4037">· 身份模型（硬边界 + 软标签）</text>
+  <text x="736" y="676" font-size="11.5" fill="#795548">tenant/user/agent/session/scope</text>
+  <text x="736" y="696" font-size="11.5" fill="#795548">硬边界：tenant/user/agent</text>
+  <text x="736" y="714" font-size="11.5" fill="#795548">软标签：scope · 默认不靠 agent_id</text>
+
+  <!-- Query path bus -->
+  <line x1="140" y1="240" x2="64" y2="240" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+  <line x1="64" y1="240" x2="64" y2="735" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4"/>
+  <line x1="64" y1="373" x2="118" y2="373" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+  <line x1="64" y1="538" x2="118" y2="538" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+  <line x1="64" y1="723" x2="118" y2="723" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+  <text x="64" y="228" text-anchor="middle" font-size="11.5" font-weight="600" fill="#1e88e5">查询 /query</text>
+
+  <!-- Legend -->
+  <g font-size="12" fill="#455a64">
+    <line x1="180" y1="1005" x2="220" y2="1005" stroke="#37474f" stroke-width="2" marker-end="url(#arrow-solid)"/>
+    <text x="232" y="1009">写入 / 同步 / 蒸馏 / 归档（后台流水线）</text>
+    <line x1="540" y1="1005" x2="580" y2="1005" stroke="#7b52c9" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-purple)"/>
+    <text x="592" y="1009">L0 输出管道事件（默认关闭）</text>
+    <line x1="820" y1="1005" x2="860" y2="1005" stroke="#1e88e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#arrow-blue)"/>
+    <text x="872" y="1009">查询召回路径</text>
+  </g>
+</svg>

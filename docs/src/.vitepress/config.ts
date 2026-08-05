@@ -48,7 +48,6 @@ export default defineConfig({
             {
               text: 'API Guides',
               items: [
-                { text: 'Context', link: '/api/context' },
                 { text: 'Query', link: '/api/query' },
                 { text: 'Write', link: '/api/write' },
                 { text: 'Status', link: '/api/status' },
@@ -104,7 +103,6 @@ export default defineConfig({
             {
               text: 'API 指南',
               items: [
-                { text: 'Context', link: '/zh/api/context' },
                 { text: 'Query', link: '/zh/api/query' },
                 { text: 'Write', link: '/zh/api/write' },
                 { text: 'Status', link: '/zh/api/status' },

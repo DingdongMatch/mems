@@ -97,7 +97,9 @@ async def create_example(session: Session = Depends(get_session)):
 ### 3.1.1 当前公开 API 约定
 
 - `POST /v1/mems/write`: 写入记忆到 L0/L1 — 只接收 `content` / `messages` / identity 字段，不接收运行时状态
-- `POST /v1/mems/query`: 跨 L0/L1/L2 语义检索
+- `POST /v1/mems/query`: 跨 L0/L1/L2 混合召回——L0 活跃会话快照 + L1/L2 向量与
+  SQL 候选；词法打分使用 CJK bigram + ASCII 整词，各来源 base 归一化到 0-1 后
+  叠加意图与新鲜度加分，同分按创建时间倒序
 - `GET /v1/mems/status`: 查看系统与流水线状态
 - `GET /v1/mems/health`: 轻量健康检查
 
@@ -138,11 +140,14 @@ class MemsWriteRequest(BaseModel):
     content: str | None       # 直接记忆文本
     messages: list[MemsMessage]  # 来源消息（可选）
     ttl_seconds: int
+    importance_score: float = 0.5  # 记忆重要度（0-1），用于蒸馏优先级
 ```
 
 规则：
 - `content` 和 `messages` 至少提供一个
 - 如果同时提供，`content` 作为记忆文本用于检索/蒸馏，`messages` 作为结构化原文保留
+- `importance_score` 达到 `DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）时，
+  写入后立即对该 agent 做 batch=1 的定向蒸馏；否则走全局阈值检查
 - 没有 `active_plan`、`temp_variables`、`metadata` 字段
 
 **MemsL1Episodic**（数据库表）
@@ -279,13 +284,21 @@ results = await vector_service.search("collection_name", query_vector, filters={
 
 ### 5.2 蒸馏任务
 
-- **阈值触发**: 未蒸馏 L1 > 100 条
-- **定时检查**: 每天 2:00 AM 执行阈值检查
+- **阈值触发**: 每次成功写入 L1 后，在后台检查未蒸馏记录；达到
+  `DISTILL_THRESHOLD`（默认 100）即触发蒸馏
+- **高价值即时**: `importance_score >= DISTILL_HIGH_IMPORTANCE_THRESHOLD`
+  （默认 0.8）的记录写入后立即蒸馏（batch=`DISTILL_IMMEDIATE_BATCH_SIZE`，
+  默认 1），不等待全局阈值
+- **无定时任务**: 蒸馏不依赖 cron，由写入路径后台触发
+  （`trigger_distill_if_due` / `distill_high_value_if_idle`），同一进程内只允许
+  一个运行实例
+- **批内排序**: 非 force 蒸馏按 `importance_score DESC, created_at ASC` 取批，
+  保证高价值优先处理
 - **运行前提**: 当前蒸馏依赖可用的 OpenAI-compatible LLM 配置
 
 ```python
 # services/distill.py
-async def trigger_distill_automatically(agent_id: str = None) -> Dict:
+async def trigger_distill_if_due() -> Dict:
     ...
 ```
 
@@ -305,11 +318,12 @@ async def trigger_archive_automatically(agent_id: str = None) -> Dict:
 
 ### 6.1 注册定时任务
 
+当前调度器只负责归档任务（蒸馏为阈值触发，无定时任务）：
+
 ```python
 from mems.services.scheduler import scheduler_service
 
 # 在 main.py lifespan 中注册
-scheduler_service.add_distill_job(func, hour=2, minute=0)
 scheduler_service.add_archive_job(func, hour=3, minute=0)
 scheduler_service.start()
 ```

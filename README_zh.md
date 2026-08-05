@@ -23,11 +23,13 @@ Mems 是一套定位工业级的 AI Agent 记忆中枢方案。它通过四层�
 
 ```text
 Third-party Agent
-  |-- GET /v1/mems/context --> L0 Redis
-  |-- POST /v1/mems/query --> L1 + L2 Recall
-  `-- POST /v1/mems/write --> L1 SQL + Qdrant
-                                  |-- L2 Distilled Memory
-                                  `-- L3 JSONL Archive
+  |-- POST /v1/mems/write --> L0 Redis（热记忆）
+  |                           |-- L0 输出管道（默认关闭）--> Redis Stream 供用户代码消费
+  |                           `-- L1 SQL + Qdrant（情景账本）
+  |                                |-- L2 蒸馏知识（画像/事实/事件/摘要）
+  |                                `-- L3 JSONL 归档
+  |-- POST /v1/mems/query --> L0 + L1 + L2 混合召回
+  `-- GET /v1/mems/status | /v1/mems/health --> 健康与流水线状态
 ```
 
 ## 快速开始
