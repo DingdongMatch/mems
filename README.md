@@ -124,15 +124,34 @@ Records are deduplicated by content fingerprint + model, so a model upgrade
 automatically queues old data for re-distillation. See
 [What Is Mems](docs/src/introduction/what-is-mems.md) for the closed-loop story.
 
-## Performance
+## Core KPIs & Benchmark
 
-Latest full evaluation based on **RAGAS** (`2026-04-05`):
+Mems measures its own quality with **retrieval-layer KPIs** — memories must be
+found accurately, quickly, and safely. RAGAS end-to-end scores are reference
+only: they depend on the external answer model and are not used to grade Mems
+itself.
+
+### Core KPIs (Mems itself, 2026-08-06)
+
+| KPI | Value | Meaning |
+| :--- | :--- | :--- |
+| L1 recall@k | 1.0000 (43/43) | expected episodic evidence is always recalled |
+| L2 recall@k | 1.0000 (43/43) | distilled knowledge is always recalled |
+| MRR (L1/L2) | ≈0.72 | evidence ranks ~1.4 on average |
+| Query latency | 20–50 ms | online recall stays millisecond-level |
+| Hygiene gates | all pass | L0 hit / archive exclusion / identity isolation |
+
+### End-to-End Reference (RAGAS, 2026-08-06)
 
 | Metric | Score |
 | :--- | :--- |
 | **Context Recall** | **1.0000** |
-| **Faithfulness** | **0.6875** |
-| **Answer Relevance** | **0.6267** |
+| **Faithfulness** | **0.7188 ± 0.3184** |
+| **Answer Relevance** | **0.6495 ± 0.1851** |
+
+43/43 cases passed. Faithfulness / answer relevance vary with the external
+answer model and judge model; they are tracked as regression references, not
+core KPIs.
 
 ## License
 
