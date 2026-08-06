@@ -1188,6 +1188,11 @@ def build_report(
 ) -> None:
     aggregated = aggregate_results(results)
     successful = [row for row in aggregated if row.get("status") == "ok"]
+    conflict_rows = [
+        row
+        for row in successful
+        if row.get("scenario_type") == "recency_conflict"
+    ]
 
     def _metric_summary(rows: list[dict[str, Any]], field: str) -> str:
         values = [
@@ -1274,7 +1279,7 @@ def build_report(
         f"- avg_l2_recall@k: {_metric_summary(successful, 'l2_hit')}",
         f"- avg_l1_mrr: {_metric_summary(successful, 'l1_rr')}",
         f"- avg_l2_mrr: {_metric_summary(successful, 'l2_rr')}",
-        f"- recency_conflict_resolved: {_metric_summary(successful, 'conflict_resolved')}",
+        f"- recency_conflict_resolved: {_metric_summary(conflict_rows, 'conflict_resolved')}",
         "",
     ]
 

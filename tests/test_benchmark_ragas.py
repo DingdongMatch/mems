@@ -199,6 +199,56 @@ def test_aggregate_results_includes_retrieval_fields():
     assert row["conflict_resolved"] == 0.5
 
 
+def test_report_conflict_resolved_only_counts_conflict_scenarios(tmp_path):
+    """recency_conflict_resolved must ignore non-conflict cases (which are 1)."""
+
+    def make_row(case_id: str, scenario: str, conflict: int) -> dict:
+        return {
+            "case_id": case_id,
+            "scenario_type": scenario,
+            "language": "en",
+            "question": "q",
+            "ground_truth": "g",
+            "trial": 1,
+            "ragas_eligible": True,
+            "status": "ok",
+            "notes": "",
+            "answer": "a",
+            "contexts": ["c"],
+            "retrieved_sources": ["l1_episodic"],
+            "l1_hit": 1,
+            "l2_hit": 1,
+            "l1_rr": 1.0,
+            "l2_rr": 1.0,
+            "conflict_resolved": conflict,
+            "write_ms": 1.0,
+            "distill_ms": 1.0,
+            "query_ms": 1.0,
+            "answer_ms": 1.0,
+            "end_to_end_ms": 5.0,
+        }
+
+    rows = [
+        make_row("rc_1", "recency_conflict", 0),
+        make_row("rc_2", "recency_conflict", 0),
+        make_row("cross_1", "cross_layer_trace", 1),
+    ]
+    report = tmp_path / "report.md"
+    bench.build_report(
+        rows,
+        report,
+        "http://x",
+        8,
+        bench.get_answer_llm_config(),
+        bench.get_ragas_evaluator_config(),
+    )
+    text = report.read_text(encoding="utf-8")
+    line = next(
+        line for line in text.splitlines() if "recency_conflict_resolved:" in line
+    )
+    assert "0.0000" in line
+
+
 def test_ragas_config_falls_back_to_settings(monkeypatch):
     for key in (
         "RAGAS_OPENAI_API_KEY",
