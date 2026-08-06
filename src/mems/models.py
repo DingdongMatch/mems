@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import Optional, List, Dict
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -249,3 +249,28 @@ class MemsL3Archive(SQLModel, table=True):
     file_path: str
     record_count: int = 0
     archived_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class MemsRedistillProgress(SQLModel, table=True):
+    """Track which archived records were re-distilled with which model.
+
+    记录哪些归档记录已用哪个模型完成再蒸馏，用于幂等与模型升级后的重蒸。
+    """
+
+    __tablename__ = "mems_redistill_progress"
+    __table_args__ = (
+        UniqueConstraint("content_hash", "model", name="uq_redistill_hash_model"),
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    # Stable fingerprint of identity + content + messages.
+    # 身份 + 内容 + 消息的稳定指纹。
+    content_hash: str = Field(index=True)
+    # Model name used for the re-distillation run (settings.OPENAI_MODEL).
+    # 执行再蒸馏时使用的模型名（settings.OPENAI_MODEL）。
+    model: str = Field(index=True)
+    # Fallback evidence pointer to the L3 JSONL source line.
+    # 指向 L3 JSONL 来源行的兜底证据指针。
+    l3_path: Optional[str] = None
+    l3_line: Optional[int] = None
+    processed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

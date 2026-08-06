@@ -30,6 +30,7 @@ async def chat(
     messages: List[Dict[str, str]],
     model: Optional[str] = None,
     temperature: float = 0.7,
+    json_mode: bool = False,
 ) -> str:
     """Send a non-streaming chat request to the configured LLM.
 

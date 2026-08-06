@@ -308,12 +308,13 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         messages: list[dict[str, str]],
         model: str | None = None,
         temperature: float = 0.7,
+        json_mode: bool = False,
     ) -> str:
         """Return deterministic extraction JSON for distillation tests.
 
         为蒸馏测试返回确定性的提取结果 JSON。
         """
-        _ = (model, temperature)
+        _ = (model, temperature, json_mode)
         content = messages[-1]["content"]
         if "New Candidates:" in content:
             start = content.index("New Candidates:") + len("New Candidates:")
@@ -408,11 +409,15 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "mems.services.l0_sync.get_embedding_service", get_fake_embedding_service
     )
     monkeypatch.setattr(
+        "mems.services.redistill.get_embedding_service", get_fake_embedding_service
+    )
+    monkeypatch.setattr(
         "mems.services.embedding.get_embedding_service", get_fake_embedding_service
     )
 
     monkeypatch.setattr("mems.services.distill.llm_chat", fake_llm_chat)
     monkeypatch.setattr("mems.services.distill.engine", engine)
+    monkeypatch.setattr("mems.services.redistill.engine", engine)
 
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_redis_service] = get_fake_redis_service

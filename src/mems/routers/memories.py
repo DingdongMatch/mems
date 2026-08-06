@@ -27,10 +27,13 @@ from mems.schemas import (
     MonitorPipelineStatus,
     MonitorStatusResponse,
     QueryResultItem,
+    RedistillRequest,
+    RedistillResponse,
 )
 from mems.services.distill import distill_high_value_if_idle, trigger_distill_if_due
 from mems.services.embedding import get_embedding_service
 from mems.services.l0_sync import sync_l0_to_l1
+from mems.services.redistill import trigger_redistill
 from mems.services.redis_service import RedisService, get_redis_service
 from mems.services.scheduler import scheduler_service
 from mems.services.vector_service import get_vector_service
@@ -848,6 +851,48 @@ async def search_memory(
     except Exception as e:
         logger.error(f"Failed to search memories: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/redistill",
+    response_model=RedistillResponse,
+    summary="Re-distill archived memories / 再蒸馏归档记忆",
+    description=(
+        "Manually re-distill archived L3 records into upgraded L2 using the "
+        "current OPENAI_MODEL. Records already processed with the same model "
+        "are skipped (content fingerprint + model dedup), so model upgrades "
+        "automatically queue old data for re-distillation.\n\n"
+        "手动触发 L3 → L2 再蒸馏：用当前 OPENAI_MODEL 升级 L2。已用同一模型处理过"
+        "的记录按内容指纹跳过，模型升级后旧数据会自动进入待重蒸队列。"
+    ),
+)
+async def redistill_memories(
+    request: RedistillRequest = Body(
+        openapi_examples={
+            "basic": {
+                "summary": "Re-distill everything / 全量再蒸馏",
+                "value": {
+                    "min_importance": 0.0,
+                    "batch_size": 100,
+                },
+            }
+        }
+    ),
+):
+    """Re-distill archived memories with the current model.
+
+    用当前模型对归档记忆执行再蒸馏。
+    """
+    result = await trigger_redistill(
+        agent_id=request.agent_id,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        min_importance=request.min_importance,
+        batch_size=request.batch_size,
+    )
+    if not result.success:
+        raise HTTPException(status_code=500, detail=result.message)
+    return result
 
 
 @router.get(

@@ -354,6 +354,53 @@ class ArchiveResponse(BaseModel):
     message: str
 
 
+class RedistillRequest(BaseModel):
+    """Request body for manually re-distilling archived memories.
+
+    手动再蒸馏归档记忆的请求体。
+    """
+
+    agent_id: Optional[str] = Field(
+        default=None, description="Restrict to one agent. / 限定单个 agent。"
+    )
+    start_date: Optional[datetime] = Field(
+        default=None, description="Include records created at or after this time. / 只处理该时间之后创建的记录。"
+    )
+    end_date: Optional[datetime] = Field(
+        default=None, description="Include records created at or before this time. / 只处理该时间之前创建的记录。"
+    )
+    min_importance: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        description="Only re-distill records with importance_score >= this value. / 只处理重要度达到该值的记录。",
+    )
+    batch_size: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=1000,
+        description="Max records processed in this run (default REDISTILL_BATCH_SIZE). / 本次最多处理的记录数。",
+    )
+
+
+class RedistillResponse(BaseModel):
+    """Result summary of one re-distillation run.
+
+    一次再蒸馏运行的结果摘要。
+    """
+
+    success: bool
+    processed: int = Field(
+        description="Records actually re-distilled. / 实际完成再蒸馏的记录数。"
+    )
+    created: int = Field(description="L2 items created. / 新建的 L2 条目数。")
+    updated: int = Field(description="L2 items updated. / 更新的 L2 条目数。")
+    skipped: int = Field(
+        description="Records skipped (dedup/filters/empty). / 跳过的记录数（去重/过滤/空内容）。"
+    )
+    message: str
+
+
 # ===================
 # L0 Working Memory
 # ===================

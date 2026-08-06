@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     DISTILL_BATCH_SIZE: int = 50
     DISTILL_HIGH_IMPORTANCE_THRESHOLD: float = 0.8
     DISTILL_IMMEDIATE_BATCH_SIZE: int = 1
+    # Max L3 records re-distilled per manual run.
+    # 每次手动再蒸馏最多处理的 L3 记录数。
+    REDISTILL_BATCH_SIZE: int = 100
     ARCHIVE_CRON_HOUR: int = 3
     ARCHIVE_CRON_MINUTE: int = 0
 

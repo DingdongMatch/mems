@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
@@ -25,6 +26,13 @@ from mems.schemas import (
     DistillResponse,
 )
 from mems.services.embedding import EmbeddingProvider
+from mems.services.distill_prompts import (
+    EXTRACTION_SYSTEM_PROMPT,
+    EXTRACTION_USER_PROMPT,
+    MULTI_VALUE_PREDICATES,
+    RECONCILE_SYSTEM_PROMPT,
+    RECONCILE_USER_PROMPT,
+)
 from mems.services.llm_client import chat as llm_chat
 from mems.services.vector_service import get_vector_service
 
@@ -35,60 +43,74 @@ logger = logging.getLogger(__name__)
 # 防止阈值触发的蒸馏在单进程内并发执行，保证同一时刻只有一个运行实例。
 _distill_in_progress = False
 
-MULTI_VALUE_PREDICATES = {
-    "喜欢",
-    "讨厌",
-    "擅长",
-    "不擅长",
-    "相关",
-    "uses",
-    "likes",
-    "dislikes",
-}
 
-EXTRACTION_PROMPT = """你是一个高级记忆分析专家，负责从 Agent 的原始对话（L1）中提炼长期语义知识（L2）。
+@dataclass
+class DistillSource:
+    """A distilled input record independent of its storage layer.
 
-任务：
-1. 过滤寒暄、低价值闲聊、一次性短期任务。
-2. 提取永久性事实、稳定偏好、重要事件。
-3. 为未来 1-10 年交互保留高价值信息。
-4. 生成一句长期摘要。
+    蒸馏输入来源记录，与存储层解耦：既可由 L1 行构造，也可由 L3 归档记录构造。
+    """
 
-输出必须是合法 JSON，格式如下：
-{
-  "discarded": [{"text": "", "reason": "greeting|low_signal|ephemeral|duplicate"}],
-  "profile_updates": [{"category": "like|dislike|habit|style|identity|value", "key": "", "value": "", "confidence": 0.0, "evidence": ""}],
-  "facts": [{"subject": "", "relation": "", "object": "", "fact_type": "general|project|location|tech|relationship", "confidence": 0.0, "evidence": ""}],
-  "events": [{"subject": "", "action": "", "object": "", "time_hint": "", "importance": 1, "evidence": ""}],
-  "conflict_candidates": [{"memory_type": "profile|fact", "old": "", "new": "", "reason": ""}],
-  "long_term_summary": ""
-}
+    tenant_id: Optional[str]
+    user_id: Optional[str]
+    agent_id: str
+    session_id: Optional[str]
+    scope: Optional[str]
+    content: str
+    source_id: int
+    created_at: datetime
+    importance_score: float = 0.5
+    # Fallback evidence pointer when the source lives in an L3 JSONL file.
+    # 来源位于 L3 JSONL 时的兜底证据指针（文件路径 + 行号）。
+    l3_path: Optional[str] = None
+    l3_line: Optional[int] = None
 
-L1 Fragments:
-__CONTENT__
+    @classmethod
+    def from_l1(cls, l1: MemsL1Episodic) -> "DistillSource":
+        """Build a source record from an L1 episodic row.
 
-Existing L2 Context:
-__EXISTING_CONTEXT__
-"""
+        从 L1 情景记忆行构造来源记录。
+        """
+        return cls(
+            tenant_id=l1.tenant_id,
+            user_id=l1.user_id,
+            agent_id=l1.agent_id,
+            session_id=l1.session_id,
+            scope=l1.scope,
+            content=l1.content,
+            source_id=l1.id or 0,
+            created_at=l1.created_at,
+            importance_score=l1.importance_score,
+        )
 
-RECONCILE_PROMPT = """你是长期记忆对账专家。请根据新知识与已有 L2 背景，判断哪些是重复、增强、更新或冲突。
+    @classmethod
+    def from_archive_record(
+        cls, record: Dict[str, Any], path: str, line_no: int
+    ) -> "DistillSource":
+        """Build a source record from one L3 JSONL archive entry.
 
-输出必须是合法 JSON，格式如下：
-{
-  "profile_updates": [{"category": "", "key": "", "value": "", "confidence": 0.0, "evidence": ""}],
-  "facts": [{"subject": "", "relation": "", "object": "", "fact_type": "", "confidence": 0.0, "evidence": ""}],
-  "events": [{"subject": "", "action": "", "object": "", "time_hint": "", "importance": 1, "evidence": ""}],
-  "conflict_candidates": [{"memory_type": "profile|fact", "old": "", "new": "", "reason": ""}],
-  "long_term_summary": ""
-}
-
-New Candidates:
-__CANDIDATES__
-
-Existing L2 Context:
-__EXISTING_CONTEXT__
-"""
-
+        从一条 L3 JSONL 归档记录构造来源记录。
+        """
+        created_at = datetime.now(timezone.utc)
+        raw_created = record.get("created_at")
+        if isinstance(raw_created, str):
+            try:
+                created_at = datetime.fromisoformat(raw_created)
+            except ValueError:
+                pass
+        return cls(
+            tenant_id=record.get("tenant_id"),
+            user_id=record.get("user_id"),
+            agent_id=record.get("agent_id", ""),
+            session_id=record.get("session_id"),
+            scope=record.get("scope"),
+            content=record.get("content", ""),
+            source_id=int(record["id"]) if record.get("id") is not None else 0,
+            created_at=created_at,
+            importance_score=float(record.get("importance_score", 0.5)),
+            l3_path=path,
+            l3_line=line_no,
+        )
 
 class DistillService:
     """记忆蒸馏服务 - L1 → L2"""
@@ -108,47 +130,47 @@ class DistillService:
         return bool(settings.OPENAI_API_KEY)
 
     @staticmethod
-    def _identity_payload(l1: MemsL1Episodic) -> Dict[str, Any]:
-        """Extract reusable identity fields from an L1 record.
+    def _identity_payload(source: DistillSource) -> Dict[str, Any]:
+        """Extract reusable identity fields from a distill source.
 
-        从 L1 记录中提取可复用的身份字段。
+        从蒸馏来源记录中提取可复用的身份字段。
         """
         return {
-            "tenant_id": l1.tenant_id,
-            "user_id": l1.user_id,
-            "agent_id": l1.agent_id,
-            "scope": l1.scope,
+            "tenant_id": source.tenant_id,
+            "user_id": source.user_id,
+            "agent_id": source.agent_id,
+            "scope": source.scope,
         }
 
-    def _build_existing_context(self, l1: MemsL1Episodic) -> Dict[str, Any]:
+    def _build_existing_context(self, source: DistillSource) -> Dict[str, Any]:
         """Collect nearby L2 context to guide extraction and reconciliation.
 
         收集关联的 L2 上下文，用于后续提取与对账。
         """
         profile_items = self.session.exec(
             select(MemsL2ProfileItem).where(
-                MemsL2ProfileItem.tenant_id == l1.tenant_id,
-                MemsL2ProfileItem.user_id == l1.user_id,
-                MemsL2ProfileItem.agent_id == l1.agent_id,
-                MemsL2ProfileItem.scope == l1.scope,
+                MemsL2ProfileItem.tenant_id == source.tenant_id,
+                MemsL2ProfileItem.user_id == source.user_id,
+                MemsL2ProfileItem.agent_id == source.agent_id,
+                MemsL2ProfileItem.scope == source.scope,
                 MemsL2ProfileItem.status == "active",
             )
         ).all()
         fact_items = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.tenant_id == l1.tenant_id,
-                MemsL2Fact.user_id == l1.user_id,
-                MemsL2Fact.agent_id == l1.agent_id,
-                MemsL2Fact.scope == l1.scope,
+                MemsL2Fact.tenant_id == source.tenant_id,
+                MemsL2Fact.user_id == source.user_id,
+                MemsL2Fact.agent_id == source.agent_id,
+                MemsL2Fact.scope == source.scope,
                 MemsL2Fact.status == "active",
             )
         ).all()
         summaries = self.session.exec(
             select(MemsL2Summary).where(
-                MemsL2Summary.tenant_id == l1.tenant_id,
-                MemsL2Summary.user_id == l1.user_id,
-                MemsL2Summary.agent_id == l1.agent_id,
-                MemsL2Summary.scope == l1.scope,
+                MemsL2Summary.tenant_id == source.tenant_id,
+                MemsL2Summary.user_id == source.user_id,
+                MemsL2Summary.agent_id == source.agent_id,
+                MemsL2Summary.scope == source.scope,
             )
         ).all()
 
@@ -174,12 +196,12 @@ class DistillService:
             "summaries": [item.content for item in summaries[-5:]],
         }
 
-    def _filter_record(self, l1: MemsL1Episodic) -> Optional[str]:
-        """Skip low-value L1 records before sending them to the LLM.
+    def _filter_record(self, content: str) -> Optional[str]:
+        """Skip low-value source records before sending them to the LLM.
 
-        在调用 LLM 之前过滤低价值的 L1 记录。
+        在调用 LLM 之前过滤低价值的来源记录。
         """
-        content = l1.content.strip()
+        content = content.strip()
         lowered = content.lower()
         noise_markers = ["你好", "谢谢", "thanks", "thank you", "收到", "ok", "好的"]
 
@@ -214,31 +236,50 @@ class DistillService:
 
         return json.loads(response)
 
+    async def _request_llm_json(
+        self, messages: list[Dict[str, str]]
+    ) -> Dict[str, Any]:
+        """Request structured JSON from the LLM with a single fallback retry.
+
+        请求结构化 JSON：优先 JSON mode，失败时降级重试一次，仍失败则抛出。
+        """
+        last_exc: Exception | None = None
+        for json_mode in (True, False):
+            try:
+                response = await llm_chat(
+                    messages=messages, temperature=0.1, json_mode=json_mode
+                )
+                return self._extract_json_payload(response)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "LLM JSON attempt failed (json_mode=%s): %s", json_mode, exc
+                )
+        raise RuntimeError(f"LLM JSON extraction failed: {last_exc}") from last_exc
+
     async def _extract_candidates(
         self,
         agent_id: str,
-        l1: MemsL1Episodic,
-        existing_context: Dict[str, Any],
+        source: DistillSource,
     ) -> DistillExtractionResult:
         """Ask the LLM to extract candidate long-term memories.
 
-        调用 LLM 提取候选长期记忆结构。
+        调用 LLM 从原文提取候选长期记忆结构（无已有上下文，避免提前去重）。
         """
-        response = await llm_chat(
+        payload = await self._request_llm_json(
             messages=[
                 {
+                    "role": "system",
+                    "content": EXTRACTION_SYSTEM_PROMPT,
+                },
+                {
                     "role": "user",
-                    "content": EXTRACTION_PROMPT.replace(
-                        "__CONTENT__", l1.content
-                    ).replace(
-                        "__EXISTING_CONTEXT__",
-                        json.dumps(existing_context, ensure_ascii=False),
+                    "content": EXTRACTION_USER_PROMPT.replace(
+                        "__CONTENT__", source.content
                     ),
-                }
+                },
             ],
-            temperature=0.1,
         )
-        payload = self._extract_json_payload(response)
         return DistillExtractionResult.model_validate(payload)
 
     async def _reconcile_candidates(
@@ -250,21 +291,23 @@ class DistillService:
 
         调用 LLM 将新候选结果与现有 L2 数据进行对账。
         """
-        response = await llm_chat(
+        payload = await self._request_llm_json(
             messages=[
                 {
+                    "role": "system",
+                    "content": RECONCILE_SYSTEM_PROMPT,
+                },
+                {
                     "role": "user",
-                    "content": RECONCILE_PROMPT.replace(
+                    "content": RECONCILE_USER_PROMPT.replace(
                         "__CANDIDATES__", extracted.model_dump_json(indent=2)
                     ).replace(
                         "__EXISTING_CONTEXT__",
                         json.dumps(existing_context, ensure_ascii=False),
                     ),
-                }
+                },
             ],
-            temperature=0.1,
         )
-        payload = self._extract_json_payload(response)
         merged = extracted.model_dump()
         for key, value in payload.items():
             merged[key] = value
@@ -281,7 +324,7 @@ class DistillService:
         return merged
 
     def _reconcile_profile_item(
-        self, l1: MemsL1Episodic, update: DistillProfileUpdate, source_id: int
+        self, source: DistillSource, update: DistillProfileUpdate, source_id: int
     ) -> tuple[int, int]:
         """Merge one extracted profile item into L2 profile storage.
 
@@ -289,10 +332,10 @@ class DistillService:
         """
         existing = self.session.exec(
             select(MemsL2ProfileItem).where(
-                MemsL2ProfileItem.tenant_id == l1.tenant_id,
-                MemsL2ProfileItem.user_id == l1.user_id,
-                MemsL2ProfileItem.agent_id == l1.agent_id,
-                MemsL2ProfileItem.scope == l1.scope,
+                MemsL2ProfileItem.tenant_id == source.tenant_id,
+                MemsL2ProfileItem.user_id == source.user_id,
+                MemsL2ProfileItem.agent_id == source.agent_id,
+                MemsL2ProfileItem.scope == source.scope,
                 MemsL2ProfileItem.category == update.category,
                 MemsL2ProfileItem.key == update.key,
                 MemsL2ProfileItem.status == "active",
@@ -315,7 +358,7 @@ class DistillService:
             self.session.add(existing)
 
             conflict = MemsL2ConflictLog(
-                **self._identity_payload(l1),
+                **self._identity_payload(source),
                 memory_type="profile",
                 old_value=f"{existing.category}:{existing.key}={existing.value}",
                 new_value=f"{update.category}:{update.key}={update.value}",
@@ -326,7 +369,7 @@ class DistillService:
             self.session.add(conflict)
 
             new_item = MemsL2ProfileItem(
-                **self._identity_payload(l1),
+                **self._identity_payload(source),
                 category=update.category,
                 key=update.key,
                 value=update.value,
@@ -339,7 +382,7 @@ class DistillService:
             return 1, 1
 
         new_item = MemsL2ProfileItem(
-            **self._identity_payload(l1),
+            **self._identity_payload(source),
             category=update.category,
             key=update.key,
             value=update.value,
@@ -350,7 +393,7 @@ class DistillService:
         return 1, 0
 
     def _reconcile_fact_item(
-        self, l1: MemsL1Episodic, fact: DistillFactItem, source_id: int
+        self, source: DistillSource, fact: DistillFactItem, source_id: int
     ) -> tuple[int, int]:
         """Merge one extracted fact into L2 fact storage.
 
@@ -358,10 +401,10 @@ class DistillService:
         """
         existing_exact = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.tenant_id == l1.tenant_id,
-                MemsL2Fact.user_id == l1.user_id,
-                MemsL2Fact.agent_id == l1.agent_id,
-                MemsL2Fact.scope == l1.scope,
+                MemsL2Fact.tenant_id == source.tenant_id,
+                MemsL2Fact.user_id == source.user_id,
+                MemsL2Fact.agent_id == source.agent_id,
+                MemsL2Fact.scope == source.scope,
                 MemsL2Fact.subject == fact.subject,
                 MemsL2Fact.predicate == fact.relation,
                 MemsL2Fact.object == fact.object,
@@ -381,10 +424,10 @@ class DistillService:
 
         conflicting = self.session.exec(
             select(MemsL2Fact).where(
-                MemsL2Fact.tenant_id == l1.tenant_id,
-                MemsL2Fact.user_id == l1.user_id,
-                MemsL2Fact.agent_id == l1.agent_id,
-                MemsL2Fact.scope == l1.scope,
+                MemsL2Fact.tenant_id == source.tenant_id,
+                MemsL2Fact.user_id == source.user_id,
+                MemsL2Fact.agent_id == source.agent_id,
+                MemsL2Fact.scope == source.scope,
                 MemsL2Fact.subject == fact.subject,
                 MemsL2Fact.predicate == fact.relation,
                 MemsL2Fact.status == "active",
@@ -393,7 +436,7 @@ class DistillService:
 
         if fact.relation in MULTI_VALUE_PREDICATES:
             new_item = MemsL2Fact(
-                **self._identity_payload(l1),
+                **self._identity_payload(source),
                 subject=fact.subject,
                 predicate=fact.relation,
                 object=fact.object,
@@ -412,7 +455,7 @@ class DistillService:
             self.session.add(existing)
 
             conflict = MemsL2ConflictLog(
-                **self._identity_payload(l1),
+                **self._identity_payload(source),
                 memory_type="fact",
                 old_value=f"{existing.subject} {existing.predicate} {existing.object}",
                 new_value=f"{fact.subject} {fact.relation} {fact.object}",
@@ -423,7 +466,7 @@ class DistillService:
             self.session.add(conflict)
 
             new_item = MemsL2Fact(
-                **self._identity_payload(l1),
+                **self._identity_payload(source),
                 subject=fact.subject,
                 predicate=fact.relation,
                 object=fact.object,
@@ -437,7 +480,7 @@ class DistillService:
             return 1, 1
 
         new_item = MemsL2Fact(
-            **self._identity_payload(l1),
+            **self._identity_payload(source),
             subject=fact.subject,
             predicate=fact.relation,
             object=fact.object,
@@ -449,14 +492,14 @@ class DistillService:
         return 1, 0
 
     def _commit_event(
-        self, l1: MemsL1Episodic, event: DistillEventItem, source_id: int
+        self, source: DistillSource, event: DistillEventItem, source_id: int
     ) -> int:
         """Persist one extracted event into L2 event storage.
 
         将单条提取出的事件写入 L2 事件存储。
         """
         new_event = MemsL2Event(
-            **self._identity_payload(l1),
+            **self._identity_payload(source),
             subject=event.subject,
             action=event.action,
             object=event.object,
@@ -469,7 +512,7 @@ class DistillService:
 
     async def _commit_summary(
         self,
-        l1: MemsL1Episodic,
+        source: DistillSource,
         summary: str,
         source_id: int,
         embedding_service: Optional[EmbeddingProvider],
@@ -483,10 +526,10 @@ class DistillService:
 
         existing = self.session.exec(
             select(MemsL2Summary).where(
-                MemsL2Summary.tenant_id == l1.tenant_id,
-                MemsL2Summary.user_id == l1.user_id,
-                MemsL2Summary.agent_id == l1.agent_id,
-                MemsL2Summary.scope == l1.scope,
+                MemsL2Summary.tenant_id == source.tenant_id,
+                MemsL2Summary.user_id == source.user_id,
+                MemsL2Summary.agent_id == source.agent_id,
+                MemsL2Summary.scope == source.scope,
                 MemsL2Summary.summary_type == "long_term",
             )
         ).all()
@@ -500,7 +543,7 @@ class DistillService:
 
         vector_id = str(uuid.uuid4())
         summary_record = MemsL2Summary(
-            **self._identity_payload(l1),
+            **self._identity_payload(source),
             summary_type="long_term",
             content=summary,
             vector_id=vector_id,
@@ -519,16 +562,16 @@ class DistillService:
             vector_service = await get_vector_service()
             summary_vector = (await embedding_service.embed([summary]))[0]
             await vector_service.upsert(
-                collection_name=f"agent_{l1.agent_id}",
+                collection_name=f"agent_{source.agent_id}",
                 points=[
                     {
                         "id": vector_id,
                         "vector": summary_vector,
                         "payload": {
-                            "tenant_id": l1.tenant_id,
-                            "user_id": l1.user_id,
-                            "agent_id": l1.agent_id,
-                            "scope": l1.scope,
+                            "tenant_id": source.tenant_id,
+                            "user_id": source.user_id,
+                            "agent_id": source.agent_id,
+                            "scope": source.scope,
                             "memory_type": "l2_summary",
                             "vector_id": vector_id,
                             "content": summary,
@@ -547,6 +590,61 @@ class DistillService:
         self.session.add(summary_record)
         return 1
 
+    async def process_source(
+        self,
+        source: DistillSource,
+        embedding_service: Optional[EmbeddingProvider] = None,
+    ) -> tuple[int, int]:
+        """Extract, reconcile and commit one source record into L2.
+
+        对单条来源记录执行提取、对账与提交，返回 (created, updated)。
+        LLM 失败时抛出异常，由调用方决定是否标记为已处理。
+        """
+        if self._filter_record(source.content):
+            return 0, 0
+
+        existing_context = self._build_existing_context(source)
+        extracted = await self._extract_candidates(source.agent_id, source)
+        reconciled = await self._reconcile_candidates(extracted, existing_context)
+
+        created = 0
+        updated = 0
+        for update in reconciled.profile_updates:
+            c, u = self._reconcile_profile_item(source, update, source.source_id)
+            created += c
+            updated += u
+
+        for fact in reconciled.facts:
+            c, u = self._reconcile_fact_item(source, fact, source.source_id)
+            created += c
+            updated += u
+
+        for event in reconciled.events:
+            created += self._commit_event(source, event, source.source_id)
+
+        created += await self._commit_summary(
+            source,
+            reconciled.long_term_summary,
+            source.source_id,
+            embedding_service,
+        )
+
+        for conflict in reconciled.conflict_candidates:
+            self.session.add(
+                MemsL2ConflictLog(
+                    **self._identity_payload(source),
+                    memory_type=conflict.memory_type,
+                    old_value=conflict.old,
+                    new_value=conflict.new,
+                    resolution="reviewed",
+                    reason=conflict.reason,
+                    source_l1_ids=[source.source_id],
+                )
+            )
+            created += 1
+
+        return created, updated
+
     async def distill(
         self,
         agent_id: str,
@@ -558,7 +656,6 @@ class DistillService:
 
         将一批 L1 记录蒸馏为结构化的 L2 记忆。
         """
-        _ = embedding_service
         query = select(MemsL1Episodic).where(MemsL1Episodic.agent_id == agent_id)
         if not force:
             query = query.where(
@@ -601,60 +698,14 @@ class DistillService:
             if l1.id is None:
                 continue
 
-            filter_reason = self._filter_record(l1)
-            if filter_reason:
-                l1.is_distilled = True
-                self.session.add(l1)
-                distilled_count += 1
-                continue
-
-            existing_context = self._build_existing_context(l1)
+            source = DistillSource.from_l1(l1)
             try:
-                extracted = await self._extract_candidates(
-                    agent_id, l1, existing_context
-                )
-                reconciled = await self._reconcile_candidates(
-                    extracted, existing_context
+                local_created, local_updated = await self.process_source(
+                    source, embedding_service
                 )
             except Exception as exc:
                 logger.error(f"LLM Error for L1 id={l1.id}: {exc}")
                 continue
-
-            local_created = 0
-            local_updated = 0
-            for update in reconciled.profile_updates:
-                c, u = self._reconcile_profile_item(l1, update, l1.id)
-                local_created += c
-                local_updated += u
-
-            for fact in reconciled.facts:
-                c, u = self._reconcile_fact_item(l1, fact, l1.id)
-                local_created += c
-                local_updated += u
-
-            for event in reconciled.events:
-                local_created += self._commit_event(l1, event, l1.id)
-
-            local_created += await self._commit_summary(
-                l1,
-                reconciled.long_term_summary,
-                l1.id,
-                embedding_service,
-            )
-
-            for conflict in reconciled.conflict_candidates:
-                self.session.add(
-                    MemsL2ConflictLog(
-                        **self._identity_payload(l1),
-                        memory_type=conflict.memory_type,
-                        old_value=conflict.old,
-                        new_value=conflict.new,
-                        resolution="reviewed",
-                        reason=conflict.reason,
-                        source_l1_ids=[l1.id],
-                    )
-                )
-                local_created += 1
 
             l1.is_distilled = True
             self.session.add(l1)
