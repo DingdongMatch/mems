@@ -30,6 +30,9 @@
   无定时蒸馏任务。
 - **归档（L1 → L3）**：APScheduler 每日 03:00 将早于 `ARCHIVE_DAYS` 的记录
   原子写入 JSONL 批次、登记元数据，并标记 L1 已归档。
+- **再蒸馏（L3 → L2，手动）**：`POST /v1/mems/redistill` 或
+  `python -m mems.redistill` 用当前 `OPENAI_MODEL` 重蒸归档 JSONL，通过版本链
+  升级 L2；同一模型已处理的记录按内容指纹跳过，模型升级后旧数据自动进入待重蒸队列。
 - **L0 输出管道**（默认关闭）：消费者用 `XREAD` / `XREADGROUP` 配合自己的代码
   消费事件；发布为尽力而为，绝不阻断 `/write`。详见
   [L0 输出管道](../integration/l0-pipeline)。

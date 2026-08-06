@@ -4,7 +4,7 @@ layout: home
 hero:
   name: "Mems"
   text: "Layered memory for AI agents"
-  tagline: "Remember, recall, distill, archive — memory infrastructure for AI agents."
+  tagline: "Remember, recall, distill, archive, re-distill — a self-evolving memory infrastructure for AI agents."
   actions:
     - theme: brand
       text: English Docs
@@ -22,6 +22,8 @@ features:
     details: "Distilled outputs stay linked to L1 evidence so long-term memory remains traceable."
   - title: "L3 Archive"
     details: "A text-first JSONL archive keeps ultra-long-term memory readable, portable, and durable."
+  - title: "L3 → L2 Re-Distillation"
+    details: "The archive is not a dead end. When your model improves, re-distill archived memories and upgrade long-term knowledge through the version chain."
   - title: "Production Isolation"
     details: "Tenant, user, agent, and session boundaries support SaaS and enterprise deployment."
   - title: "Atomic Integration"

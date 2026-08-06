@@ -60,7 +60,10 @@ export default defineConfig({
             },
             {
               text: 'Development',
-              items: [{ text: 'Contributing', link: '/development/contributing' }]
+              items: [
+                { text: 'Contributing', link: '/development/contributing' },
+                { text: 'Roadmap', link: '/development/roadmap' }
+              ]
             }
           ]
         }
@@ -115,7 +118,10 @@ export default defineConfig({
             },
             {
               text: '开发',
-              items: [{ text: '贡献指南', link: '/zh/development/contributing' }]
+              items: [
+                { text: '贡献指南', link: '/zh/development/contributing' },
+                { text: '未来规划', link: '/zh/development/roadmap' }
+              ]
             }
           ]
         }

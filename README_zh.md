@@ -103,6 +103,22 @@ JSON 编码的 `messages` 缓冲区。发布是尽力而为的：流失败不会
 `POST /v1/mems/write`。完整格式与消费组示例见
 [L0 输出管道](docs/src/zh/integration/l0-pipeline.md)。
 
+## L3 → L2 再蒸馏：随模型进化的记忆
+
+Mems 的亮点：**归档不是终点**。当底层大模型变得更强时，你可以再蒸馏归档记忆，
+让长期知识升级为当前模型能提炼出的结论：
+
+```bash
+curl -X POST http://localhost:8210/v1/mems/redistill
+# 或
+uv run python -m mems.redistill --agent demo-agent
+```
+
+归档 JSONL 完整保留原始记忆：再蒸馏从 L3 读取，用当前 `OPENAI_MODEL` 重新执行
+提取 + 对账，并通过版本链（`supersedes` + 冲突日志）无损升级 L2。记录按
+「内容指纹 + 模型名」去重，模型升级后旧数据自动进入待重蒸队列。闭环故事见
+[什么是 Mems](docs/src/zh/introduction/what-is-mems.md)。
+
 ## 📊 性能表现
 
 基于 **RAGAS** 的最新基准测试报告显示（`2026-04-05`）：

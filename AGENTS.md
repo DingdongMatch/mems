@@ -12,6 +12,7 @@ Mems 的核心理念：
 
 ```text
 Mems 存储和召回记忆，不管理运行时状态
+Mems 记忆随模型进化：L3 归档可再蒸馏，模型升级后无损升级 L2
 ```
 
 会话上下文、任务目标、活动计划、临时变量由调用方自行管理。
@@ -22,6 +23,7 @@ Mems 存储和召回记忆，不管理运行时状态
  用户入口 → L0 (Redis 热缓存) → L1 (SQL + Qdrant 记忆账本)
                                      ├→ L2 (画像/事实/事件/摘要/冲突日志)
                                      └→ L3 (JSONL 归档)
+        └── L3 → L2 再蒸馏（手动，模型升级后触发，版本链升级）
 ```
 
 ### 技术栈
@@ -46,7 +48,6 @@ src/mems/
 ├── models.py             # SQLModel 数据库模型
 ├── schemas/              # Pydantic 请求/响应模型
 ├── database.py           # SQLModel engine + init_db()
-├── dependencies.py       # FastAPI 依赖注入
 │
 ├── services/
 │   ├── scheduler.py      # APScheduler 调度服务（单例）
@@ -54,9 +55,12 @@ src/mems/
 │   ├── l0_sync.py        # L0→L1 同步函数
 │   ├── vector_service.py # Qdrant Async SDK 封装
 │   ├── embedding.py      # Embedding 抽象层
+│   ├── ranking.py        # 混合召回排序与词法打分纯函数
 │   ├── llm_client.py     # OpenAI-compatible LLM 客户端
+│   ├── distill_prompts.py# 蒸馏提示词模板与常量
 │   ├── distill.py        # L1→L2 蒸馏服务
 │   ├── archive.py        # L1→L3 归档服务
+│   ├── redistill.py      # L3→L2 手动再蒸馏服务
 │   └── jsonl_utils.py    # JSONL 读写工具
 │
 └── routers/
@@ -100,6 +104,8 @@ async def create_example(session: Session = Depends(get_session)):
 - `POST /v1/mems/query`: 跨 L0/L1/L2 混合召回——L0 活跃会话快照 + L1/L2 向量与
   SQL 候选；词法打分使用 CJK bigram + ASCII 整词，各来源 base 归一化到 0-1 后
   叠加意图与新鲜度加分，同分按创建时间倒序
+- `POST /v1/mems/redistill`: 手动触发 L3→L2 再蒸馏，用当前 `OPENAI_MODEL`
+  升级 L2；按「内容指纹 + 模型名」去重，模型更换后旧数据自动进入待重蒸队列
 - `GET /v1/mems/status`: 查看系统与流水线状态
 - `GET /v1/mems/health`: 轻量健康检查
 
@@ -312,6 +318,18 @@ async def trigger_archive_automatically(agent_id: str = None) -> Dict:
     ...
 ```
 
+### 5.4 再蒸馏任务（手动）
+
+- **触发方式**: `POST /v1/mems/redistill` 或 CLI `python -m mems.redistill`
+- **输入输出**: 读取 L3 JSONL 归档，复用 `DistillService.process_source`
+  走提取 + 对账 + 版本链升级 L2；`source_id` 保留原始 L1 id，并记录
+  `l3_path/l3_line` 兜底证据指针
+- **去重**: 表 `mems_redistill_progress(content_hash, model)`，唯一键
+  `(content_hash, model)`，`model` = 运行时 `settings.OPENAI_MODEL`
+- **过滤**: 支持 agent / created_at 时间范围 / min_importance，单次上限
+  `REDISTILL_BATCH_SIZE`（默认 100）
+- **容错**: LLM 失败或损坏行跳过并记日志、不标记进度，下次可重试
+
 ---
 
 ## 6. 调度器使用
@@ -427,6 +445,7 @@ uvicorn mems.main:app --reload --port 8210
 | `EMBEDDING_PROVIDER` | embedding 模型 (sentence-transformers/openai) |
 | `OPENAI_*` | OpenAI-compatible LLM / embedding 配置 |
 | `SCHEDULER_ENABLED` | 启用调度器 |
+| `REDISTILL_BATCH_SIZE` | 每次手动再蒸馏最多处理的 L3 记录数 |
 
 ---
 

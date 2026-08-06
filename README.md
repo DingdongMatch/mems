@@ -105,6 +105,25 @@ best-effort: a stream failure never blocks `POST /v1/mems/write`. See
 [L0 Output Pipeline](docs/src/integration/l0-pipeline.md) for the full format
 and consumer-group examples.
 
+## L3 → L2 Re-Distillation: Memory That Evolves With The Model
+
+Mems' highlight: the **archive is not a dead end**. When the underlying LLM gets
+stronger, you can re-distill archived memories so long-term knowledge upgrades
+to what the current model can extract:
+
+```bash
+curl -X POST http://localhost:8210/v1/mems/redistill
+# or
+uv run python -m mems.redistill --agent demo-agent
+```
+
+Archived JSONL keeps the full raw memory, so re-distillation reads from L3,
+re-runs extraction + reconciliation with the current `OPENAI_MODEL`, and upgrades
+L2 non-destructively through the version chain (`supersedes` + conflict log).
+Records are deduplicated by content fingerprint + model, so a model upgrade
+automatically queues old data for re-distillation. See
+[What Is Mems](docs/src/introduction/what-is-mems.md) for the closed-loop story.
+
 ## Performance
 
 Latest full evaluation based on **RAGAS** (`2026-04-05`):

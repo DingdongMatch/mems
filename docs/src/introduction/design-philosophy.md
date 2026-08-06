@@ -19,3 +19,12 @@ Hot cache, raw events, stable knowledge, and cold archive are not the same kind 
 ## SQL-First Online Truth
 
 Current online memory is committed to SQL first. Qdrant is treated as a derived online replica, while JSONL is reserved for L3 archive output.
+
+## Model-Evolving Memory
+
+Long-term memory should improve as models improve. L3 JSONL is kept as durable,
+model-agnostic feedstock; a manual re-distillation (`POST /v1/mems/redistill`)
+sends archived records back through the current distillation pipeline, and the
+L2 version chain upgrades old knowledge non-destructively. Mems is designed so
+the archive is not a tombstone but a source that can be reborn under a newer,
+stronger model.
