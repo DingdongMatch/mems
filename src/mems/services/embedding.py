@@ -13,14 +13,6 @@ class EmbeddingProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_dimension(self) -> int:
-        """Return the embedding dimensionality.
-
-        返回向量维度。
-        """
-        pass
-
 
 class SentenceTransformersProvider(EmbeddingProvider):
     """sentence-transformers 本地向量化"""
@@ -32,7 +24,6 @@ class SentenceTransformersProvider(EmbeddingProvider):
         """
         self.model_name = model_name
         self._model = None
-        self._dimension = None
 
     async def _load_model(self):
         """Load the local sentence-transformers model once.
@@ -43,7 +34,6 @@ class SentenceTransformersProvider(EmbeddingProvider):
             from sentence_transformers import SentenceTransformer
 
             self._model = SentenceTransformer(self.model_name)
-            self._dimension = self._model.get_sentence_embedding_dimension()
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """Embed texts with the local sentence-transformers model.
@@ -52,16 +42,10 @@ class SentenceTransformersProvider(EmbeddingProvider):
         """
         await self._load_model()
         model = cast(object, self._model)
-        embeddings = model.encode(texts, convert_to_numpy=True)
+        embeddings = model.encode(  # type: ignore[attr-defined]
+            texts, convert_to_numpy=True
+        )
         return [emb.tolist() for emb in embeddings]
-
-    async def get_dimension(self) -> int:
-        """Return the loaded local model vector dimension.
-
-        返回已加载本地模型的向量维度。
-        """
-        await self._load_model()
-        return cast(int, self._dimension)
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
@@ -80,7 +64,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self._dimension = None
 
     async def embed(self, texts: List[str]) -> List[List[float]]:
         """Call the OpenAI-compatible embeddings endpoint.
@@ -99,23 +82,6 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             response.raise_for_status()
             data = response.json()
             return [item["embedding"] for item in data["data"]]
-
-    async def get_dimension(self) -> int:
-        """Infer vector dimension from the configured model name.
-
-        根据配置的模型名推断向量维度。
-        """
-        if self._dimension is None:
-            if "3-small" in self.model or "ada" in self.model:
-                self._dimension = 1536
-            elif "3-large" in self.model:
-                self._dimension = 3072
-            elif "text-embedding-002" in self.model:
-                self._dimension = 1536
-            else:
-                self._dimension = 1536
-        return self._dimension
-
 
 def get_embedding_provider() -> EmbeddingProvider:
     """Build the configured embedding provider implementation.

@@ -45,33 +45,6 @@ class MemsL1Episodic(SQLModel, table=True):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class MemsL2Semantic(SQLModel, table=True):
-    """Store generic semantic triples distilled into L2 knowledge.
-
-    存储蒸馏进入 L2 的通用语义三元组知识。
-    """
-
-    __tablename__ = "mems_l2_semantic"
-
-    # Hard identity boundaries carried over from source memories.
-    # 从源记忆继承而来的硬身份边界。
-    id: Optional[int] = Field(default=None, primary_key=True)
-    tenant_id: Optional[str] = Field(default=None, index=True)
-    user_id: Optional[str] = Field(default=None, index=True)
-    agent_id: str = Field(index=True)
-    scope: Optional[str] = Field(default=None, index=True)
-    subject: str = Field(index=True)
-    predicate: str
-    object: str
-    confidence: float = 1.0
-    # Source L1 records used to produce this semantic item.
-    # 生成该语义项所使用的来源 L1 记录。
-    source_ids: List[int] = Field(default_factory=list, sa_column=Column(JSON))
-    version: int = 1
-    is_active: bool = Field(default=True, index=True)
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-
 class MemsL2ProfileItem(SQLModel, table=True):
     """Store stable user profile items such as preferences and habits.
 

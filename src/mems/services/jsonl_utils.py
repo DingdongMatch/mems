@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -76,35 +76,4 @@ class JsonlReader:
                 line = line.strip()
                 if line:
                     results.append(json.loads(line))
-        return results
-
-    def read_by_agent(self, agent_id: str, prefix: str = "*") -> List[Dict[str, Any]]:
-        """Read all JSONL records for an agent by filename pattern.
-
-        按文件名模式读取某个 agent 的全部 JSONL 记录。
-        """
-        results = []
-        pattern = f"{prefix}_{agent_id}_*.jsonl"
-        for filepath in self.dir_path.glob(pattern):
-            results.extend(self.read(filepath))
-        return results
-
-    def read_date_range(
-        self,
-        agent_id: str,
-        start_date: datetime,
-        end_date: datetime,
-        prefix: str = "*",
-    ) -> List[Dict[str, Any]]:
-        """Read agent JSONL records across an inclusive date range.
-
-        读取某个 agent 在给定日期区间内的 JSONL 记录。
-        """
-        results = []
-        current = start_date
-        while current <= end_date:
-            pattern = f"{prefix}_{agent_id}_{current.strftime('%Y%m%d')}.jsonl"
-            for filepath in self.dir_path.glob(pattern):
-                results.extend(self.read(filepath))
-            current = current + timedelta(days=1)
         return results

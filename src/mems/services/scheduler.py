@@ -1,6 +1,8 @@
 import logging
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from apscheduler.schedulers.asyncio import (  # type: ignore[import-untyped]
+    AsyncIOScheduler,
+)
+from apscheduler.triggers.cron import CronTrigger  # type: ignore[import-untyped]
 
 logger = logging.getLogger(__name__)
 
@@ -67,22 +69,6 @@ class SchedulerService:
             replace_existing=True,
         )
         logger.info(f"Archive job scheduled at {hour:02d}:{minute:02d}")
-
-    def add_interval_job(self, func, minutes: int = 60, id: str = None):
-        """Schedule a generic fixed-interval job.
-
-        注册一个固定时间间隔执行的通用任务。
-        """
-        self._scheduler.add_job(
-            func,
-            "interval",
-            minutes=minutes,
-            id=id,
-            name=id,
-            replace_existing=True,
-        )
-        logger.info(f"Interval job '{id}' scheduled every {minutes} minutes")
-
 
 scheduler_service = SchedulerService()
 

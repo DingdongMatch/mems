@@ -12,6 +12,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from mems.database import get_session
 from mems.main import app
 from mems.config import settings
+from mems.services.embedding import get_embedding_service
 from mems.services.redis_service import build_l0_pipeline_event, get_redis_service
 from mems.services.vector_service import get_vector_service
 
@@ -422,6 +423,7 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     app.dependency_overrides[get_session] = override_get_session
     app.dependency_overrides[get_redis_service] = get_fake_redis_service
     app.dependency_overrides[get_vector_service] = get_fake_vector_service
+    app.dependency_overrides[get_embedding_service] = get_fake_embedding_service
 
     try:
         yield app, engine, redis_service, vector_service

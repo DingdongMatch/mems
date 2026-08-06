@@ -66,5 +66,8 @@ storage/l3_archive/*.jsonl
 !storage/l2_knowledge/.gitkeep
 !storage/l3_archive/.gitkeep
 
+# Benchmark generated outputs
+benchmark_reports/
+
 # Docker
 docker-compose.override.yml

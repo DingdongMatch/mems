@@ -1,5 +1,4 @@
 import logging
-import re
 import inspect
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -34,6 +33,18 @@ from mems.services.distill import distill_high_value_if_idle, trigger_distill_if
 from mems.services.embedding import get_embedding_service
 from mems.services.l0_sync import sync_l0_to_l1
 from mems.services.redistill import trigger_redistill
+from mems.services.ranking import (
+    detect_query_intents,
+    intent_bonus,
+    l1_base,
+    l2_entity_base,
+    l2_event_base,
+    l2_summary_base,
+    lexical_overlap,
+    rank_score,
+    rank_verified_score,
+    sort_results,
+)
 from mems.services.redis_service import RedisService, get_redis_service
 from mems.services.scheduler import scheduler_service
 from mems.services.vector_service import get_vector_service
@@ -200,228 +211,6 @@ TURN_WRITE_RESPONSE_EXAMPLE = {
     }
 }
 
-INTENT_KEYWORDS = {
-    "profile": {
-        "like",
-        "likes",
-        "dislike",
-        "dislikes",
-        "prefer",
-        "preference",
-        "habit",
-        "style",
-        "喜欢",
-        "讨厌",
-        "偏好",
-        "习惯",
-        "风格",
-    },
-    "fact": {
-        "who",
-        "what",
-        "where",
-        "project",
-        "language",
-        "relationship",
-        "事实",
-        "项目",
-        "技术",
-        "关系",
-        "语言",
-    },
-    "event": {
-        "recent",
-        "today",
-        "yesterday",
-        "doing",
-        "working",
-        "latest",
-        "最近",
-        "今天",
-        "昨天",
-        "正在",
-        "进展",
-    },
-    "summary": {
-        "summary",
-        "overview",
-        "focus",
-        "trend",
-        "总结",
-        "概括",
-        "关注",
-        "趋势",
-    },
-}
-
-SOURCE_INTENT = {
-    "l1_episodic": "event",
-    "l2_profile": "profile",
-    "l2_fact": "fact",
-    "l2_event": "event",
-    "l2_summary": "summary",
-}
-
-
-def _tokenize_terms(text: str) -> set[str]:
-    """Split text into lexical terms: ASCII words plus CJK character bigrams.
-
-    将文本切分为词法单元：ASCII 整词 + 中文相邻双字（bigram），
-    避免无空格中文在 `\\W+` 切分下退化成整串单 token。
-    """
-    lowered = text.lower()
-    tokens = set(re.findall(r"[a-z0-9_]+", lowered))
-    cjk = "".join(ch for ch in lowered if "\u4e00" <= ch <= "\u9fff")
-    tokens.update(cjk[i : i + 2] for i in range(len(cjk) - 1))
-    return tokens
-
-
-def _lexical_overlap(query: str, text: str) -> float:
-    """Return the 0-1 lexical overlap ratio between query and text.
-
-    返回查询与文本之间的 0-1 词法重叠率。
-    """
-    query_terms = _tokenize_terms(query)
-    if not query_terms:
-        return 0.0
-    text_terms = _tokenize_terms(text)
-    return len(query_terms & text_terms) / len(query_terms)
-
-
-def _clip01(value: float) -> float:
-    """Clamp a value into the 0-1 range for score normalization.
-
-    将数值裁剪到 0-1 区间，用于分数归一化。
-    """
-    return max(0.0, min(1.0, value))
-
-
-def _l1_base(vector_score: float, lexical: float) -> float:
-    """Normalized L1 episodic base score in 0-1."""
-    return 0.6 * _clip01(vector_score) + 0.4 * lexical
-
-
-def _l2_entity_base(confidence: float, lexical: float) -> float:
-    """Normalized L2 profile/fact base score in 0-1."""
-    return 0.7 * _clip01(confidence) + 0.3 * lexical
-
-
-def _l2_event_base(importance: int, lexical: float) -> float:
-    """Normalized L2 event base score in 0-1."""
-    return 0.6 * _clip01(importance / 10.0) + 0.4 * lexical
-
-
-def _l2_summary_base(lexical: float, vector_score: float) -> float:
-    """Normalized L2 summary base score in 0-1."""
-    return max(lexical, 0.6 * _clip01(vector_score))
-
-
-def _sort_results(results: list[QueryResultItem]) -> list[QueryResultItem]:
-    """Sort results by score desc, then created_at desc for deterministic order.
-
-    按分数降序、创建时间降序排序，保证同分结果顺序确定。
-    """
-    epoch = datetime.fromtimestamp(0, tz=timezone.utc)
-    return sorted(
-        results,
-        key=lambda item: (item.score, item.created_at or epoch),
-        reverse=True,
-    )
-
-
-def _detect_query_intents(query: str) -> set[str]:
-    """Infer coarse search intents from the user query.
-
-    根据用户查询推断粗粒度检索意图。
-    """
-    lowered = query.lower()
-    terms = {term for term in re.split(r"\W+", lowered) if term}
-    intents = set()
-    for intent, keywords in INTENT_KEYWORDS.items():
-        if terms & keywords:
-            intents.add(intent)
-    if not intents:
-        intents = {"fact", "event"}
-    return intents
-
-
-def _freshness_bonus(created_at: datetime | None, horizon_days: int = 365) -> float:
-    """Reward newer memories with a bounded freshness bonus.
-
-    为较新的记忆提供一个有上限的新鲜度加分。
-    """
-    if created_at is None:
-        return 0.0
-    now = datetime.now(timezone.utc)
-    timestamp = created_at
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    age_days = max((now - timestamp).total_seconds() / 86400.0, 0.0)
-    freshness = max(0.0, 1.0 - min(age_days / horizon_days, 1.0))
-    return freshness * 0.25
-
-
-def _verification_decay(verified_at: datetime | None, stale_days: int = 365) -> float:
-    """Decay trust for memories that have not been re-verified recently.
-
-    对长期未再次验证的记忆降低可信度权重。
-    """
-    if verified_at is None:
-        return 0.55
-    now = datetime.now(timezone.utc)
-    timestamp = verified_at
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=timezone.utc)
-    age_days = max((now - timestamp).total_seconds() / 86400.0, 0.0)
-    decay = min(age_days / stale_days, 1.0)
-    return 1.0 - decay * 0.45
-
-
-def _intent_bonus(source: str, intents: set[str]) -> float:
-    """Boost items whose memory type matches the inferred intents.
-
-    为与推断意图匹配的记忆类型增加额外分值。
-    """
-    mapped = SOURCE_INTENT.get(source)
-    if mapped == "summary" and "summary" in intents:
-        return 0.7
-    if mapped in intents:
-        return 0.45
-    if source == "l1_episodic" and "summary" in intents:
-        return 0.1
-    if source == "l2_event" and "summary" in intents:
-        return 0.05
-    return 0.0
-
-
-def _rank_score(
-    base_score: float, source: str, created_at: datetime | None, intents: set[str]
-) -> float:
-    """Rank an item with intent relevance plus freshness.
-
-    结合意图匹配与新鲜度对结果进行排序。
-    """
-    return base_score + _intent_bonus(source, intents) + _freshness_bonus(created_at)
-
-
-def _rank_verified_score(
-    base_score: float,
-    source: str,
-    created_at: datetime | None,
-    verified_at: datetime | None,
-    intents: set[str],
-) -> float:
-    """Rank a verified item with decay, intent relevance, and freshness.
-
-    对已验证结果结合衰减、意图和新鲜度进行排序。
-    """
-    return (
-        base_score * _verification_decay(verified_at)
-        + _intent_bonus(source, intents)
-        + _freshness_bonus(created_at)
-    )
-
-
 def _with_identity_filters(query, model, request) -> Any:
     """Apply tenant, user, and scope filters to a query.
 
@@ -475,7 +264,9 @@ def _messages_to_content(messages: list[dict[str, str]]) -> str:
     },
 )
 async def write_memory(
-    request: MemsWriteRequest = Body(openapi_examples={"basic": WRITE_MEMORY_EXAMPLE}),
+    request: MemsWriteRequest = Body(
+        openapi_examples={"basic": WRITE_MEMORY_EXAMPLE},  # type: ignore[dict-item]
+    ),
     redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
     background_tasks: BackgroundTasks = BackgroundTasks(),
@@ -562,16 +353,20 @@ async def write_memory(
     },
 )
 async def search_memory(
-    request: MemsQueryRequest = Body(openapi_examples={"basic": SEARCH_MEMORY_EXAMPLE}),
+    request: MemsQueryRequest = Body(
+        openapi_examples={"basic": SEARCH_MEMORY_EXAMPLE},  # type: ignore[dict-item]
+    ),
     redis: RedisService = Depends(get_redis_service),
     session: Session = Depends(get_session),
+    vector_service=Depends(get_vector_service),
+    embedding_service=Depends(get_embedding_service),
 ):
     """Search memory across L0 hot cache, L1 episodic, and L2 semantic layers.
 
     在 L0 热缓存、L1 情景层和 L2 语义层之间执行统一混合检索。
     """
     try:
-        query_intents = _detect_query_intents(request.query)
+        query_intents = detect_query_intents(request.query)
 
         # ---- L0 hot memory cache (active snapshots across sessions) ----
         results: list[QueryResultItem] = []
@@ -585,13 +380,13 @@ async def search_memory(
         for l0 in l0_snapshots:
             if not l0.content:
                 continue
-            base = 0.7 * _lexical_overlap(request.query, l0.content)
+            base = 0.7 * lexical_overlap(request.query, l0.content)
             if base > 0:
                 results.append(
                     QueryResultItem(
                         source="l0_hot",
                         content=l0.content,
-                        score=base + _intent_bonus("l0_hot", query_intents),
+                        score=base + intent_bonus("l0_hot", query_intents),
                         session_id=l0.session_id,
                         tenant_id=l0.tenant_id,
                         user_id=l0.user_id,
@@ -600,9 +395,6 @@ async def search_memory(
                 )
 
         # ---- L1 + L2 ----
-        vector_service = await get_vector_service()
-        embedding_service = await get_embedding_service()
-
         embeddings = await embedding_service.embed([request.query])
         query_vector = embeddings[0]
 
@@ -654,7 +446,7 @@ async def search_memory(
         if vector_ids:
             l1_query = select(MemsL1Episodic).where(
                 MemsL1Episodic.agent_id == request.agent_id,
-                MemsL1Episodic.vector_id.in_(vector_ids),
+                MemsL1Episodic.vector_id.in_(vector_ids),  # type: ignore[attr-defined]
                 MemsL1Episodic.is_archived == False,  # noqa: E712
             )
             l1_records = session.exec(
@@ -678,10 +470,10 @@ async def search_memory(
                 QueryResultItem(
                     source="l1_episodic",
                     content=l1_record.content,
-                    score=_rank_score(
-                        _l1_base(
+                    score=rank_score(
+                        l1_base(
                             result["score"],
-                            _lexical_overlap(request.query, l1_record.content),
+                            lexical_overlap(request.query, l1_record.content),
                         ),
                         "l1_episodic",
                         l1_record.created_at,
@@ -703,7 +495,9 @@ async def search_memory(
                     MemsL2ProfileItem.agent_id == request.agent_id,
                     MemsL2ProfileItem.status == "active",
                 )
-                .order_by(MemsL2ProfileItem.last_verified_at.desc())
+                .order_by(
+                    MemsL2ProfileItem.last_verified_at.desc()  # type: ignore[attr-defined]
+                )
                 .limit(candidate_limit),
                 MemsL2ProfileItem,
                 request,
@@ -714,10 +508,10 @@ async def search_memory(
                 QueryResultItem(
                     source="l2_profile",
                     content=f"{item.category} {item.key} {item.value}",
-                    score=_rank_verified_score(
-                        _l2_entity_base(
+                    score=rank_verified_score(
+                        l2_entity_base(
                             item.confidence,
-                            _lexical_overlap(
+                            lexical_overlap(
                                 request.query,
                                 f"{item.category} {item.key} {item.value}",
                             ),
@@ -742,7 +536,9 @@ async def search_memory(
                     MemsL2Fact.agent_id == request.agent_id,
                     MemsL2Fact.status == "active",
                 )
-                .order_by(MemsL2Fact.last_verified_at.desc())
+                .order_by(
+                    MemsL2Fact.last_verified_at.desc()  # type: ignore[attr-defined]
+                )
                 .limit(candidate_limit),
                 MemsL2Fact,
                 request,
@@ -754,10 +550,10 @@ async def search_memory(
                 QueryResultItem(
                     source="l2_fact",
                     content=fact_text,
-                    score=_rank_verified_score(
-                        _l2_entity_base(
+                    score=rank_verified_score(
+                        l2_entity_base(
                             item.confidence,
-                            _lexical_overlap(request.query, fact_text),
+                            lexical_overlap(request.query, fact_text),
                         ),
                         "l2_fact",
                         item.last_verified_at,
@@ -776,7 +572,9 @@ async def search_memory(
             _with_identity_filters(
                 select(MemsL2Event)
                 .where(MemsL2Event.agent_id == request.agent_id)
-                .order_by(MemsL2Event.created_at.desc())
+                .order_by(
+                    MemsL2Event.created_at.desc()  # type: ignore[attr-defined]
+                )
                 .limit(candidate_limit),
                 MemsL2Event,
                 request,
@@ -788,10 +586,10 @@ async def search_memory(
                 QueryResultItem(
                     source="l2_event",
                     content=event_text,
-                    score=_rank_score(
-                        _l2_event_base(
+                    score=rank_score(
+                        l2_event_base(
                             item.importance_score,
-                            _lexical_overlap(request.query, event_text),
+                            lexical_overlap(request.query, event_text),
                         ),
                         "l2_event",
                         item.created_at,
@@ -809,7 +607,9 @@ async def search_memory(
             _with_identity_filters(
                 select(MemsL2Summary)
                 .where(MemsL2Summary.agent_id == request.agent_id)
-                .order_by(MemsL2Summary.last_verified_at.desc())
+                .order_by(
+                    MemsL2Summary.last_verified_at.desc()  # type: ignore[attr-defined]
+                )
                 .limit(candidate_limit),
                 MemsL2Summary,
                 request,
@@ -823,9 +623,9 @@ async def search_memory(
                 QueryResultItem(
                     source="l2_summary",
                     content=item.content,
-                    score=_rank_verified_score(
-                        _l2_summary_base(
-                            _lexical_overlap(request.query, item.content),
+                    score=rank_verified_score(
+                        l2_summary_base(
+                            lexical_overlap(request.query, item.content),
                             summary_vector_score,
                         ),
                         "l2_summary",
@@ -841,7 +641,7 @@ async def search_memory(
                 )
             )
 
-        results = _sort_results(results)[: request.top_k]
+        results = sort_results(results)[: request.top_k]
 
         return MemsQueryResponse(
             query=request.query,

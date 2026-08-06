@@ -18,21 +18,27 @@ class VectorService:
 
         初始化异步 Qdrant 客户端及本地缓存集合。
         """
-        client_kwargs = {
-            "api_key": settings.QDRANT_API_KEY or None,
-            "timeout": settings.QDRANT_TIMEOUT,
-            "check_compatibility": False,
-            "prefer_grpc": settings.QDRANT_PREFER_GRPC,
-            "grpc_port": settings.QDRANT_GRPC_PORT,
-            "https": settings.QDRANT_HTTPS,
-        }
         if settings.QDRANT_URL:
-            client_kwargs["url"] = settings.QDRANT_URL
+            self._client = AsyncQdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY or None,
+                timeout=settings.QDRANT_TIMEOUT,
+                check_compatibility=False,
+                prefer_grpc=settings.QDRANT_PREFER_GRPC,
+                grpc_port=settings.QDRANT_GRPC_PORT,
+                https=settings.QDRANT_HTTPS,
+            )
         else:
-            client_kwargs["host"] = settings.QDRANT_HOST
-            client_kwargs["port"] = settings.QDRANT_PORT
-
-        self._client = AsyncQdrantClient(**client_kwargs)
+            self._client = AsyncQdrantClient(
+                host=settings.QDRANT_HOST,
+                port=settings.QDRANT_PORT,
+                api_key=settings.QDRANT_API_KEY or None,
+                timeout=settings.QDRANT_TIMEOUT,
+                check_compatibility=False,
+                prefer_grpc=settings.QDRANT_PREFER_GRPC,
+                grpc_port=settings.QDRANT_GRPC_PORT,
+                https=settings.QDRANT_HTTPS,
+            )
         self._known_collections: set[str] = set()
         self._indexed_collections: set[str] = set()
 
@@ -164,7 +170,9 @@ class VectorService:
                 )
         query_filter: models.Filter | None = None
         if must_conditions:
-            query_filter = models.Filter(must=must_conditions)
+            query_filter = models.Filter(
+                must=must_conditions  # type: ignore[arg-type]
+            )
 
         response = await self._client.query_points(
             collection_name=collection_name,

@@ -4,13 +4,13 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from mems.routers.memories import (
-    _l1_base,
-    _l2_entity_base,
-    _l2_event_base,
-    _l2_summary_base,
-    _lexical_overlap,
-    _sort_results,
+from mems.services.ranking import (
+    l1_base,
+    l2_entity_base,
+    l2_event_base,
+    l2_summary_base,
+    lexical_overlap,
+    sort_results,
 )
 from mems.schemas import QueryResultItem
 
@@ -20,12 +20,12 @@ def test_lexical_overlap_supports_chinese():
 
     CJK bigram 分词保证中文词法匹配有效。
     """
-    assert _lexical_overlap("喜欢", "用户喜欢Rust") == 1.0
-    assert _lexical_overlap("Rust", "用户喜欢Rust") == 1.0
-    assert _lexical_overlap("中文", "用户喜欢用中文交流") == 1.0
-    assert _lexical_overlap("Rust", "The user likes Rust") == 1.0
-    assert _lexical_overlap("python", "I like Rust") == 0.0
-    assert _lexical_overlap("", "anything") == 0.0
+    assert lexical_overlap("喜欢", "用户喜欢Rust") == 1.0
+    assert lexical_overlap("Rust", "用户喜欢Rust") == 1.0
+    assert lexical_overlap("中文", "用户喜欢用中文交流") == 1.0
+    assert lexical_overlap("Rust", "The user likes Rust") == 1.0
+    assert lexical_overlap("python", "I like Rust") == 0.0
+    assert lexical_overlap("", "anything") == 0.0
 
 
 def test_l0_recall_across_sessions(test_app):
@@ -95,12 +95,12 @@ def test_normalized_bases_are_bounded():
     """
     lexical = 0.5
     for base in (
-        _l1_base(vector_score=0.9, lexical=lexical),
-        _l1_base(vector_score=-0.2, lexical=0.0),
-        _l1_base(vector_score=1.8, lexical=lexical),
-        _l2_entity_base(confidence=1.0, lexical=lexical),
-        _l2_event_base(importance=8, lexical=lexical),
-        _l2_summary_base(lexical=lexical, vector_score=0.6),
+        l1_base(vector_score=0.9, lexical=lexical),
+        l1_base(vector_score=-0.2, lexical=0.0),
+        l1_base(vector_score=1.8, lexical=lexical),
+        l2_entity_base(confidence=1.0, lexical=lexical),
+        l2_event_base(importance=8, lexical=lexical),
+        l2_summary_base(lexical=lexical, vector_score=0.6),
     ):
         assert 0.0 <= base <= 1.0
 
@@ -125,8 +125,8 @@ def test_sort_results_is_deterministic():
     )
     no_date = QueryResultItem(source="l0_hot", content="nodate", score=1.0)
 
-    sorted_once = _sort_results([no_date, older, newer])
-    sorted_twice = _sort_results([no_date, older, newer])
+    sorted_once = sort_results([no_date, older, newer])
+    sorted_twice = sort_results([no_date, older, newer])
     assert [item.content for item in sorted_once] == ["newer", "older", "nodate"]
     assert sorted_once == sorted_twice
 

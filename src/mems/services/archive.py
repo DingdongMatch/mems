@@ -70,41 +70,41 @@ class ArchiveService:
         filepath = archive_dir / filename
         temp_filepath = archive_dir / f".{filename}.tmp"
 
-        records_to_archive = []
-        for record in l1_records:
-            records_to_archive.append(
+        archive_entries = []
+        for l1_record in l1_records:
+            archive_entries.append(
                 {
-                    "id": record.id,
-                    "tenant_id": record.tenant_id,
-                    "user_id": record.user_id,
-                    "agent_id": record.agent_id,
-                    "session_id": record.session_id,
-                    "scope": record.scope,
-                    "content": record.content,
-                    "importance_score": record.importance_score,
-                    "is_distilled": record.is_distilled,
+                    "id": l1_record.id,
+                    "tenant_id": l1_record.tenant_id,
+                    "user_id": l1_record.user_id,
+                    "agent_id": l1_record.agent_id,
+                    "session_id": l1_record.session_id,
+                    "scope": l1_record.scope,
+                    "content": l1_record.content,
+                    "importance_score": l1_record.importance_score,
+                    "is_distilled": l1_record.is_distilled,
                     "is_archived": True,
-                    "messages": record.messages_json,
-                    "created_at": record.created_at.isoformat(),
+                    "messages": l1_record.messages_json,
+                    "created_at": l1_record.created_at.isoformat(),
                 }
             )
 
         try:
             with open(temp_filepath, "w", encoding="utf-8") as f:
-                for record in records_to_archive:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                for entry in archive_entries:
+                    f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             temp_filepath.replace(filepath)
         except Exception as exc:
-            for record in l1_records:
-                record.archive_status = "failed"
-                record.last_sync_error = f"archive: {exc}"
-                record.last_sync_at = datetime.now(timezone.utc)
-                self.session.add(record)
+            for l1_record in l1_records:
+                l1_record.archive_status = "failed"
+                l1_record.last_sync_error = f"archive: {exc}"
+                l1_record.last_sync_at = datetime.now(timezone.utc)
+                self.session.add(l1_record)
             self.session.commit()
             temp_filepath.unlink(missing_ok=True)
             raise
 
-        summary = f"Archived {len(records_to_archive)} records from {agent_id}"
+        summary = f"Archived {len(archive_entries)} records from {agent_id}"
 
         l3_archive = MemsL3Archive(
             tenant_id=tenant_id,
@@ -114,24 +114,24 @@ class ArchiveService:
             time_period=time_period,
             summary_text=summary,
             file_path=str(filepath),
-            record_count=len(records_to_archive),
+            record_count=len(archive_entries),
         )
         self.session.add(l3_archive)
 
-        for record in l1_records:
-            record.is_archived = True
-            record.archive_status = "ready"
-            record.last_sync_error = None
-            record.last_sync_at = datetime.now(timezone.utc)
-            self.session.add(record)
+        for l1_record in l1_records:
+            l1_record.is_archived = True
+            l1_record.archive_status = "ready"
+            l1_record.last_sync_error = None
+            l1_record.last_sync_at = datetime.now(timezone.utc)
+            self.session.add(l1_record)
 
         self.session.commit()
 
         return ArchiveResponse(
             success=True,
-            archived_count=len(records_to_archive),
+            archived_count=len(archive_entries),
             file_path=str(filepath),
-            message=f"Archived {len(records_to_archive)} records",
+            message=f"Archived {len(archive_entries)} records",
         )
 
 
