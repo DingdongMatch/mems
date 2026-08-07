@@ -266,6 +266,10 @@ def test_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     构建一个使用伪造基础设施依赖的隔离 FastAPI 测试应用。
     """
+    # 蒸馏测试依赖 llm_chat 打桩；_has_llm_client() 只检查 API key，
+    # 因此注入占位 key，避免 CI 无 .env 时蒸馏被跳过。
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+
     db_path = tmp_path / "test.db"
     engine = create_engine(
         f"sqlite:///{db_path}", connect_args={"check_same_thread": False}
