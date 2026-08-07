@@ -8,7 +8,6 @@ L3 归档读取器 - 纯 Python 标准库实现
     python reader.py --help
 """
 import json
-import os
 import sys
 from pathlib import Path
 from datetime import datetime

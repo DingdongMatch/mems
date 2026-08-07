@@ -1,5 +1,9 @@
 # Mems
 
+[![Tests](https://github.com/DingdongMatch/mems/actions/workflows/tests.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/tests.yml)
+[![Lint](https://github.com/DingdongMatch/mems/actions/workflows/lint.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/lint.yml)
+[![Type Check](https://github.com/DingdongMatch/mems/actions/workflows/typecheck.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/typecheck.yml)
+
 > A layered, self-distilling, century-scale memory system for AI agents.
 
 Mems is an industrial-grade memory hub solution for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.
@@ -42,6 +46,31 @@ python scripts/init_db.py
 uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
+
+## 5-Minute Demo
+
+With the API running (see Quick Start), try the memory loop end to end:
+
+```bash
+uv run python scripts/demo.py
+```
+
+The demo writes a memory, recalls it, shows the pipeline status, and triggers a
+re-distillation (a no-op until records are archived).
+
+## Current Status
+
+Mems is at **v0.1 (early stage)**. The core pipeline — write, recall, distill,
+archive, and re-distill — works and is covered by unit tests, but the project is
+**single-node oriented**:
+
+- default storage is SQLite; a MySQL/Postgres migration path is on the roadmap
+- the scheduler and distillation triggers are in-process; multi-replica
+  deployments are not supported yet
+- benchmark numbers come from our self-designed scenarios, not public benchmarks
+
+Feedback, issues, and contributions are welcome. See
+[Roadmap](docs/src/development/roadmap.md).
 
 Docs site local dev:
 

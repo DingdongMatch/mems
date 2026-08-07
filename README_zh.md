@@ -1,5 +1,9 @@
 # Mems
 
+[![Tests](https://github.com/DingdongMatch/mems/actions/workflows/tests.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/tests.yml)
+[![Lint](https://github.com/DingdongMatch/mems/actions/workflows/lint.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/lint.yml)
+[![Type Check](https://github.com/DingdongMatch/mems/actions/workflows/typecheck.yml/badge.svg)](https://github.com/DingdongMatch/mems/actions/workflows/typecheck.yml)
+
 > 一个面向 AI Agent 的分层、自蒸馏、跨世纪长周期记忆系统。
 
 Mems 是一套定位工业级的 AI Agent 记忆中枢方案。它通过四层冷热解耦架构，为智能体提供具备人格一致性、低成本检索和结构化进化的记忆基座。
@@ -42,6 +46,27 @@ python scripts/init_db.py
 uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
+
+## 5 分钟演示
+
+服务启动后（见快速开始），跑一遍完整的记忆闭环：
+
+```bash
+uv run python scripts/demo.py
+```
+
+脚本会写入一条记忆、召回它、查看流水线状态，并触发一次再蒸馏（在产生归档记录前为 no-op）。
+
+## 当前状态
+
+Mems 目前处于 **v0.1 早期阶段**。核心流水线——写入、召回、蒸馏、归档、再蒸馏——可用且有
+单元测试覆盖，但项目**面向单机部署**：
+
+- 默认存储为 SQLite；MySQL/Postgres 迁移路径在 Roadmap 中
+- 调度器与蒸馏触发为进程内实现，暂不支持多副本部署
+- 基准数据来自自建场景，而非公开基准
+
+欢迎反馈、issue 与贡献。详见 [Roadmap](docs/src/zh/development/roadmap.md)。
 
 文档站本地启动：
 
