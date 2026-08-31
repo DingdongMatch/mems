@@ -70,7 +70,7 @@ docs/
 ├── package.json          # VitePress 文档站脚本
 └── src/
     ├── .vitepress/       # 文档站配置与主题
-    ├── en/               # 英文文档
+    ├── *.md              # 英文文档（root locale）
     └── zh/               # 中文文档
 ```
 

@@ -19,9 +19,9 @@ export default withMermaid(defineConfig({
       themeConfig: {
         nav: [
           { text: 'Home', link: '/' },
-          { text: 'Quick Start', link: '/en/quick-start' },
-          { text: 'Integration', link: '/en/integration/overview' },
-          { text: 'Architecture', link: '/en/introduction/architecture' },
+          { text: 'Quick Start', link: '/quick-start' },
+          { text: 'Integration', link: '/integration/overview' },
+          { text: 'Architecture', link: '/introduction/architecture' },
           { text: 'GitHub', link: 'https://github.com/DingdongMatch/mems' }
         ],
         sidebar: {
@@ -29,41 +29,41 @@ export default withMermaid(defineConfig({
             {
               text: 'Introduction',
               items: [
-                { text: 'What Is Mems', link: '/en/introduction/what-is-mems' },
-                { text: 'Design Philosophy', link: '/en/introduction/design-philosophy' },
-                { text: 'Architecture Overview', link: '/en/introduction/architecture' }
+                { text: 'What Is Mems', link: '/introduction/what-is-mems' },
+                { text: 'Design Philosophy', link: '/introduction/design-philosophy' },
+                { text: 'Architecture Overview', link: '/introduction/architecture' }
               ]
             },
             {
               text: 'Getting Started',
-              items: [{ text: 'Quick Start', link: '/en/quick-start' }]
+              items: [{ text: 'Quick Start', link: '/quick-start' }]
             },
             {
               text: 'Integration',
               items: [
-                { text: 'Overview', link: '/en/integration/overview' },
-                { text: 'Identity Model', link: '/en/integration/identity-model' },
-                { text: 'L0 Output Pipeline', link: '/en/integration/l0-pipeline' }
+                { text: 'Overview', link: '/integration/overview' },
+                { text: 'Identity Model', link: '/integration/identity-model' },
+                { text: 'L0 Output Pipeline', link: '/integration/l0-pipeline' }
               ]
             },
             {
               text: 'API Guides',
               items: [
-                { text: 'Query', link: '/en/api/query' },
-                { text: 'Write', link: '/en/api/write' },
-                { text: 'Status', link: '/en/api/status' },
-                { text: 'Health', link: '/en/api/health' }
+                { text: 'Query', link: '/api/query' },
+                { text: 'Write', link: '/api/write' },
+                { text: 'Status', link: '/api/status' },
+                { text: 'Health', link: '/api/health' }
               ]
             },
             {
               text: 'Quality',
-              items: [{ text: 'Benchmark and Quality', link: '/en/quality/benchmarks' }]
+              items: [{ text: 'Benchmark and Quality', link: '/quality/benchmarks' }]
             },
             {
               text: 'Development',
               items: [
-                { text: 'Contributing', link: '/en/development/contributing' },
-                { text: 'Roadmap', link: '/en/development/roadmap' }
+                { text: 'Contributing', link: '/development/contributing' },
+                { text: 'Roadmap', link: '/development/roadmap' }
               ]
             }
           ]

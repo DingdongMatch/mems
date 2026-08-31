@@ -70,7 +70,7 @@ archive, and re-distill — works and is covered by unit tests, but the project 
 - benchmark numbers come from our self-designed scenarios, not public benchmarks
 
 Feedback, issues, and contributions are welcome. See
-[Roadmap](docs/src/en/development/roadmap.md).
+[Roadmap](docs/src/development/roadmap.md).
 
 Docs site local dev:
 
@@ -131,7 +131,7 @@ redis-cli XREAD COUNT 10 STREAMS mems:l0:events 0
 Each event carries `event_type` (`write`/`append`), the identity fields, the
 `content` snapshot, and a JSON-encoded `messages` buffer. Publication is
 best-effort: a stream failure never blocks `POST /v1/mems/write`. See
-[L0 Output Pipeline](docs/src/en/integration/l0-pipeline.md) for the full format
+[L0 Output Pipeline](docs/src/integration/l0-pipeline.md) for the full format
 and consumer-group examples.
 
 ## L3 → L2 Re-Distillation: Memory That Evolves With The Model
@@ -151,7 +151,7 @@ re-runs extraction + reconciliation with the current `OPENAI_MODEL`, and upgrade
 L2 non-destructively through the version chain (`supersedes` + conflict log).
 Records are deduplicated by content fingerprint + model, so a model upgrade
 automatically queues old data for re-distillation. See
-[What Is Mems](docs/src/en/introduction/what-is-mems.md) for the closed-loop story.
+[What Is Mems](docs/src/introduction/what-is-mems.md) for the closed-loop story.
 
 ## Core KPIs & Benchmark
 
