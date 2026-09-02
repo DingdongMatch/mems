@@ -92,20 +92,25 @@ mindmap
 
 ## 数据流
 
-- **写入（Remember）**（`POST /v1/mems/write`）：写入 L0 快照（TTL）→
-  `sync_l0_to_l1` 落库 `mems_l1_episodic`，并尽力同步 Qdrant 向量副本；
-  当 `L0_PIPELINE_ENABLED=true` 时还会向 Redis Stream 发布 `write`/`append` 事件。
+- **写入（Remember）**（`POST /v1/mems/write`）：写入 L0 快照（TTL），然后在
+  同一事务中提交主记录 `mems_l1_episodic` 及其 Outbox 事件。Qdrant 向量副本由
+  `vector_sync` Outbox 处理器异步同步，HTTP 路径保持快速，最终一致性由 Outbox
+  worker 保证。当 `L0_PIPELINE_ENABLED=true` 时，还会向 Redis Stream 发布
+  `write`/`append` 事件。
 - **召回（Recall）**（`POST /v1/mems/query`）：读取 L0 跨会话活跃快照，汇总
   L1/L2 SQL 候选，结合 Qdrant 向量检索，再按归一化 base（0-1）+ 意图权重 +
   新鲜度排序；词法重叠使用 CJK bigram + ASCII 整词。默认排除已归档 L1。
-- **蒸馏（L1 → L2）**：阈值触发。每次成功写入后，后台任务检查未蒸馏记录；
-  达到 `DISTILL_THRESHOLD`（默认 100）即执行 LLM 提取与对账，创建/更新画像、
-  事实、事件、摘要与冲突日志，并同步摘要向量。`importance_score >=
-  DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）的记录写入后立即蒸馏
-  （batch=1），不等待全局阈值；批内按重要度降序、创建时间升序取数。
-  无定时蒸馏任务。
-- **归档（L1 → L3）**：APScheduler 每日 03:00 将早于 `ARCHIVE_DAYS` 的记录
-  原子写入 JSONL 批次、登记元数据，并标记 L1 已归档。
+- **蒸馏（L1 → L2）**：通过 Outbox 阈值触发。每次成功写入都会 enqueue 一个
+  `distill_due` 事件（按 global 聚合去重）；当未蒸馏 L1 记录达到
+  `DISTILL_THRESHOLD`（默认 100）时，worker 将其展开为按 agent 的
+  `distill_agent` 事件。随后 LLM 提取与对账创建/更新画像、事实、事件、摘要与
+  冲突日志，并同步摘要向量。`importance_score >=
+  DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）的记录会直接 enqueue
+  `distill_agent`（batch=1），不等待全局阈值；批内按重要度降序、创建时间升序
+  取数。无定时蒸馏任务。
+- **归档（L1 → L3）**：APScheduler 每日 03:00 为早于 `ARCHIVE_DAYS` 的记录身份
+  enqueue `archive_agent` 事件；Outbox worker 随后原子写入 JSONL 批次、登记
+  元数据，并标记 L1 已归档。
 - **再蒸馏（L3 → L2，手动）**：`POST /v1/mems/redistill` 或
   `python -m mems.redistill` 用当前 `OPENAI_MODEL` 重蒸归档 JSONL，通过版本链
   升级 L2；同一模型已处理的记录按内容指纹跳过，模型升级后旧数据自动进入待重蒸队列。
@@ -117,18 +122,25 @@ mindmap
 
 - **API 层**：FastAPI 路由统一挂在 `/v1/mems/*`；依赖注入
   `Session`、`RedisService`、`VectorService`、`EmbeddingService`。
-- **服务层**：`redis_service`（L0）、`l0_sync`（L0→L1）、`vector_service`
-  （Qdrant 异步 SDK）、`embedding`（sentence-transformers 或 openai）、
-  `llm_client`（OpenAI-compatible）、`distill`、`archive`、`scheduler`
-  （APScheduler 单例）、`jsonl_utils`。
+- **应用服务**：`WriteMemoryService`（写入）、`QueryMemoryService`（召回）、
+  `DistillApplicationService`（L1→L2）、`ArchiveApplicationService`（L1→L3）、
+  `VectorSyncApplicationService`（Outbox 向量同步）。
+- **领域层**：记忆身份、L0/L1 记忆、L2 知识、L3 归档与 Outbox 事件的聚合与
+  值对象；蒸馏、排序、对账作为纯领域服务放在这里。
+- **基础设施层**：Redis/Qdrant/embedding/LLM 适配器、SQLModel 持久化、仓储，
+  以及事务性 Outbox 的 `OutboxWorker`，负责 claim 事件、分发处理并按指数退避
+  重试。可在进程内运行，也可通过 `python -m mems.worker` 独立部署。
 - **隔离模型**：硬边界 `tenant_id` / `user_id` / `agent_id`；软标签 `scope`；
   `session_id` 为可选溯源。多用户隔离不能只依赖 `agent_id`。
 - **失败容忍**：向量副本同步与流发布均为尽力而为；蒸馏、归档在后台执行，
-  以状态列跟踪（`vector_status`、`archive_status`、`is_distilled`、`is_archived`）。
+  由 Outbox worker 通过状态列（`vector_status`、`archive_status`、
+  `is_distilled`、`is_archived`）与重试/退避语义保证最终一致。
 
 ## 部署说明
 
 - 端口：Mems API `8210`、Qdrant `6333`、Redis `6379`。
+- Outbox worker 默认在应用 lifespan 内运行（`OUTBOX_WORKER_ENABLED=true`）；
+  设为 `false` 后可通过 `python -m mems.worker` 独立部署以水平扩展。
 - 测试全部使用 Fake 注入（`FakeRedisService`、`FakeVectorService`、
   `FakeEmbeddingService`），无需外部服务。
 - 蒸馏依赖 OpenAI-compatible LLM 配置；无凭据时自动跳过。

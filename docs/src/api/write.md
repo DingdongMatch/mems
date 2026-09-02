@@ -7,6 +7,7 @@ Remember memory content into the system. Mems stores what matters — raw episod
 - `content`
 - `messages`
 - `ttl_seconds`
+- `importance_score`
 - `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope`
 
 ## Behavior Notes
@@ -15,4 +16,7 @@ Remember memory content into the system. Mems stores what matters — raw episod
 - if both are provided, `content` is used as the memory text and `messages` is preserved as structured source
 - L0 caches recent memories with a bounded sliding window and TTL
 - L1 persists a new episodic record with the full memory text and optional source messages
+- `importance_score` controls distillation priority; records at or above
+  `DISTILL_HIGH_IMPORTANCE_THRESHOLD` (default 0.8) trigger immediate batch=1
+  distillation after write
 - returns whether L1 persistence succeeded and the resulting `l1_id`

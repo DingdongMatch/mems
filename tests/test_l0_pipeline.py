@@ -6,7 +6,7 @@ import json
 from fastapi.testclient import TestClient
 
 from mems.config import settings
-from mems.services.redis_service import RedisService
+from mems.infrastructure.external.redis_service import RedisService
 
 
 def test_pipeline_disabled_by_default(test_app):
@@ -192,52 +192,6 @@ def test_publish_failure_does_not_break_write(monkeypatch):
     assert l0.agent_id == "agent_unit"
     assert l0.short_term_buffer == [{"role": "user", "content": "Still stored"}]
     assert client.set_calls == 1
-
-
-def test_append_message_publishes_append_event(monkeypatch):
-    """The single-message append path publishes an append event.
-
-    单条追加路径（append_message）发布 append 事件。
-    """
-    client = _RecordingClient()
-    service = RedisService()
-
-    async def fake_get_client():
-        return client
-
-    monkeypatch.setattr(service, "get_client", fake_get_client)
-    monkeypatch.setattr(settings, "L0_PIPELINE_ENABLED", True)
-
-    async def run():
-        await service.write(
-            tenant_id=None,
-            user_id=None,
-            agent_id="agent_unit",
-            session_id=None,
-            messages=[{"role": "user", "content": "First"}],
-            content="First",
-            scope=None,
-        )
-        await service.append_message(
-            agent_id="agent_unit",
-            session_id=None,
-            message={"role": "user", "content": "Second"},
-            tenant_id=None,
-            user_id=None,
-            scope=None,
-        )
-
-    import asyncio
-
-    asyncio.run(run())
-    assert len(client.xadd_calls) == 2
-    assert client.xadd_calls[0][1]["event_type"] == "write"
-    assert client.xadd_calls[1][1]["event_type"] == "append"
-    appended = json.loads(client.xadd_calls[1][1]["messages"])
-    assert appended == [
-        {"role": "user", "content": "First"},
-        {"role": "user", "content": "Second"},
-    ]
 
 
 def test_empty_stream_name_disables_publish(monkeypatch):

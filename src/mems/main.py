@@ -1,12 +1,14 @@
 import logging
+import asyncio
 from pathlib import Path
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from mems.config import settings
-from mems.database import init_db
-from mems.routers import memories
-from mems.services.scheduler import scheduler_service
+from mems.infrastructure.persistence.database import init_db
+from mems.interfaces.api import memories
+from mems.interfaces.bootstrap import build_outbox_worker
+from mems.infrastructure.external.scheduler import scheduler_service
 
 
 logger = logging.getLogger(__name__)
@@ -21,8 +23,12 @@ async def lifespan(app: FastAPI):
     init_db()
     Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
 
+    worker_task = None
+    if settings.OUTBOX_WORKER_ENABLED:
+        worker_task = asyncio.create_task(build_outbox_worker().run_forever())
+
     if settings.SCHEDULER_ENABLED:
-        from mems.services.archive import trigger_archive_automatically
+        from mems.interfaces.bootstrap import trigger_archive_automatically
 
         scheduler_service.add_archive_job(
             trigger_archive_automatically,
@@ -35,6 +41,13 @@ async def lifespan(app: FastAPI):
         )
 
     yield
+
+    if worker_task is not None:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
 
     if settings.SCHEDULER_ENABLED:
         scheduler_service.shutdown()
@@ -63,13 +76,15 @@ app = FastAPI(
         "- **🔌 原子化接入**：围绕 `Remember -> Recall` 的极简 API 设计。\n\n"
         "## Public APIs / 公开接口\n"
         "1. `POST /v1/mems/write` remembers memory content into L0/L1.\n"
-        "2. `POST /v1/mems/query` recalls relevant active L1 and L2 memories.\n"
-        "3. `GET /v1/mems/status` shows system and pipeline status.\n"
-        "4. `GET /v1/mems/health` is a lightweight health check.\n\n"
+        "2. `POST /v1/mems/query` recalls relevant memories across L0, L1, and L2.\n"
+        "3. `POST /v1/mems/redistill` re-distills archived L3 records into L2 with the current model.\n"
+        "4. `GET /v1/mems/status` shows system and pipeline status.\n"
+        "5. `GET /v1/mems/health` is a lightweight health check.\n\n"
         "1. `POST /v1/mems/write` 将记忆内容写入 L0/L1。\n"
-        "2. `POST /v1/mems/query` 召回相关的活跃 L1 与 L2 记忆。\n"
-        "3. `GET /v1/mems/status` 查看系统和流水线状态。\n"
-        "4. `GET /v1/mems/health` 做轻量健康检查。"
+        "2. `POST /v1/mems/query` 跨 L0、L1、L2 召回相关记忆。\n"
+        "3. `POST /v1/mems/redistill` 用当前模型将归档 L3 记录再蒸馏到 L2。\n"
+        "4. `GET /v1/mems/status` 查看系统和流水线状态。\n"
+        "5. `GET /v1/mems/health` 做轻量健康检查。"
     ),
     version="0.1.0",
     lifespan=lifespan,

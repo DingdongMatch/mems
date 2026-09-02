@@ -62,8 +62,9 @@ uv run python scripts/demo.py
 Mems 目前处于 **v0.1 早期阶段**。核心流水线——写入、召回、蒸馏、归档、再蒸馏——可用且有
 单元测试覆盖，但项目**面向单机部署**：
 
-- 默认存储为 SQLite；MySQL/Postgres 迁移路径在 Roadmap 中
-- 调度器与蒸馏触发为进程内实现，暂不支持多副本部署
+- 默认存储为 PostgreSQL
+- 归档调度器为进程内实现；Outbox worker 默认在进程内运行，也可通过
+  `python -m mems.worker` 独立部署；暂不完全支持多副本部署
 - 基准数据来自自建场景，而非公开基准
 
 欢迎反馈、issue 与贡献。详见 [Roadmap](docs/src/zh/development/roadmap.md)。

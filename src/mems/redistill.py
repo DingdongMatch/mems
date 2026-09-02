@@ -7,7 +7,7 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 
-from mems.services.redistill import trigger_redistill
+from mems.interfaces.bootstrap import trigger_redistill
 
 
 def _parse_date(value: str) -> datetime:

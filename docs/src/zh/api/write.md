@@ -7,6 +7,7 @@
 - `content`
 - `messages`
 - `ttl_seconds`
+- `importance_score`
 - `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope`
 
 ## 行为说明
@@ -15,4 +16,7 @@
 - 如果同时提供，`content` 作为记忆文本，`messages` 作为结构化来源原文保留
 - L0 以有限滑窗 + TTL 缓存近期记忆
 - L1 落一条新的情景记录，包含完整记忆文本和可选的来源消息
+- `importance_score` 控制蒸馏优先级；达到
+  `DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）的记录写入后立即触发
+  batch=1 蒸馏
 - 返回是否已成功持久化到 L1 及对应的 `l1_id`

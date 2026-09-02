@@ -13,18 +13,20 @@ import redis
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from mems.config import settings
-from mems.database import init_db
+from mems.infrastructure.persistence.database import init_db
 
 
 ROOT = Path(__file__).parent.parent
 
 
-def reset_sqlite_db() -> None:
-    database_url = settings.DATABASE_URL
-    if database_url.startswith("sqlite:///"):
-        db_path = ROOT / database_url.removeprefix("sqlite:///")
-        if db_path.exists():
-            db_path.unlink()
+def reset_database() -> None:
+    """Drop all PostgreSQL tables for a clean dev reset."""
+    import mems.infrastructure.persistence.models  # noqa: F401
+    from sqlmodel import SQLModel
+
+    from mems.infrastructure.persistence.database import engine
+
+    SQLModel.metadata.drop_all(engine)
 
 
 def reset_storage() -> None:
@@ -72,7 +74,7 @@ def reset_qdrant() -> None:
 
 def main() -> None:
     print("Resetting development state...")
-    reset_sqlite_db()
+    reset_database()
     reset_storage()
     reset_redis()
     reset_qdrant()

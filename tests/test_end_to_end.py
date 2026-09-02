@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
-from mems.models import (
+from mems.infrastructure.persistence.models import (
     MemsL1Episodic,
     MemsL2ConflictLog,
     MemsL2Event,
@@ -14,8 +15,11 @@ from mems.models import (
     MemsL2ProfileItem,
     MemsL2Summary,
 )
-from mems.services.archive import ArchiveService
-from mems.services.distill import DistillService
+from mems.interfaces.bootstrap import (
+    build_outbox_worker,
+    make_archive_service,
+    make_distill_service,
+)
 
 
 def test_memory_pipeline_end_to_end(test_app):
@@ -51,6 +55,9 @@ def test_memory_pipeline_end_to_end(test_app):
         assert write.status_code == 200
         assert write.json()["persisted_to_l1"] is True
 
+        worker = build_outbox_worker()
+        asyncio.run(worker.run_once())
+
         search_before = client.post(
             "/v1/mems/query",
             json={"agent_id": "agent_test", "query": "Python", "top_k": 5},
@@ -76,8 +83,8 @@ def test_memory_pipeline_end_to_end(test_app):
         assert monitor_before_archive.json()["pipeline"]["pending_archive"] == 1
 
     with Session(engine) as session:
-        archive_result = __import__("asyncio").run(
-            ArchiveService(session).archive(agent_id="agent_test", days=30)
+        archive_result = asyncio.run(
+            make_archive_service(session).archive(agent_id="agent_test", days=30)
         )
         assert archive_result.success is True
         assert archive_result.archived_count == 1
@@ -103,8 +110,9 @@ def test_memory_pipeline_end_to_end(test_app):
         assert monitor_after_archive.json()["pipeline"]["pending_archive"] == 0
 
     with Session(engine) as session:
-        distill_result = __import__("asyncio").run(
-            DistillService(session).distill(
+        distill_service = asyncio.run(make_distill_service(session))
+        distill_result = asyncio.run(
+            distill_service.distill(
                 agent_id="agent_test", batch_size=10, force=False
             )
         )
@@ -189,22 +197,14 @@ def test_write_memory_keeps_l1_record_when_vector_sync_fails(
     app, engine, _, _ = test_app
 
     class FailingVectorService:
-        async def upsert(self, collection_name: str, points):
-            """Always fail vector upserts for resilience testing.
-
-            始终让向量写入失败，用于验证容错逻辑。
-            """
+        async def upsert_episodic(self, collection_name: str, memory, vector):
             raise RuntimeError("vector unavailable")
 
     async def get_failing_vector_service():
-        """Return the failing vector service used in this test.
-
-        返回本测试使用的失败向量服务。
-        """
         return FailingVectorService()
 
     monkeypatch.setattr(
-        "mems.services.l0_sync.get_vector_service", get_failing_vector_service
+        "mems.interfaces.bootstrap.get_vector_service", get_failing_vector_service
     )
 
     with TestClient(app) as client:
@@ -219,6 +219,9 @@ def test_write_memory_keeps_l1_record_when_vector_sync_fails(
 
     assert response.status_code == 200
     assert response.json()["persisted_to_l1"] is True
+
+    worker = build_outbox_worker()
+    asyncio.run(worker.run_once())
 
     with Session(engine) as session:
         record = session.exec(
@@ -258,8 +261,9 @@ def test_distill_reconciliation_supersedes_profile_value(test_app):
         session.commit()
 
     with Session(engine) as session:
-        result = __import__("asyncio").run(
-            DistillService(session).distill(
+        distill_service = asyncio.run(make_distill_service(session))
+        result = asyncio.run(
+            distill_service.distill(
                 agent_id="agent_conflict", batch_size=10, force=False
             )
         )

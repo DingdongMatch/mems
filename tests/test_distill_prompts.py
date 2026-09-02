@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mems.services.distill_prompts import (
+from mems.domain.services.prompts import (
     EXTRACTION_SYSTEM_PROMPT,
     EXTRACTION_USER_PROMPT,
     RECONCILE_SYSTEM_PROMPT,

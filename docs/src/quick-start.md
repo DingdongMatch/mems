@@ -20,7 +20,7 @@ cp .env.example .env
 
 The default local setup uses:
 
-- SQLite
+- PostgreSQL
 - local Redis
 - local Qdrant
 - `sentence-transformers` embeddings

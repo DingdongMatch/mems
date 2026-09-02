@@ -20,7 +20,7 @@ cp .env.example .env
 
 默认开发配置包含：
 
-- SQLite 数据库
+- PostgreSQL 数据库
 - 本地 Redis
 - 本地 Qdrant
 - `sentence-transformers` embedding

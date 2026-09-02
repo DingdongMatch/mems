@@ -64,9 +64,10 @@ Mems is at **v0.1 (early stage)**. The core pipeline — write, recall, distill,
 archive, and re-distill — works and is covered by unit tests, but the project is
 **single-node oriented**:
 
-- default storage is SQLite; a MySQL/Postgres migration path is on the roadmap
-- the scheduler and distillation triggers are in-process; multi-replica
-  deployments are not supported yet
+- default storage is PostgreSQL
+- the archive scheduler is in-process; the outbox worker runs in-process by
+  default but can be split out with `python -m mems.worker`; multi-replica
+  deployments are not fully supported yet
 - benchmark numbers come from our self-designed scenarios, not public benchmarks
 
 Feedback, issues, and contributions are welcome. See

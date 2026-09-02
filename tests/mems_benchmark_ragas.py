@@ -19,8 +19,8 @@ from openai import AsyncOpenAI, OpenAI
 from sqlmodel import Session, select
 
 from mems.config import settings
-from mems.database import engine
-from mems.models import (
+from mems.infrastructure.persistence.database import engine
+from mems.infrastructure.persistence.models import (
     MemsL1Episodic,
     MemsL2ConflictLog,
     MemsL2Event,
@@ -28,11 +28,13 @@ from mems.models import (
     MemsL2ProfileItem,
     MemsL2Summary,
 )
-from mems.services.distill import DistillService
-from mems.services.archive import ArchiveService
-from mems.services.redistill import trigger_redistill
-from mems.services.redis_service import redis_service
-from mems.services.vector_service import get_vector_service
+from mems.interfaces.bootstrap import (
+    make_archive_service,
+    make_distill_service,
+    trigger_redistill,
+)
+from mems.infrastructure.external.redis_service import redis_service
+from mems.infrastructure.external.vector_service import get_vector_service
 
 try:
     from ragas import evaluate
@@ -986,7 +988,8 @@ def backdate_agent_records(agent_id: str, days: int) -> None:
 async def force_distill(agent_id: str) -> tuple[dict[str, Any], float]:
     started = time.perf_counter()
     with Session(engine) as session:
-        result = await DistillService(session).distill(agent_id=agent_id, force=True)
+        service = await make_distill_service(session)
+        result = await service.distill(agent_id=agent_id, force=True)
     elapsed_ms = (time.perf_counter() - started) * 1000
     return {
         "success": result.success,
@@ -1523,7 +1526,7 @@ async def _run_hygiene_case(
             )
             backdate_agent_records(agent_id, days=settings.ARCHIVE_DAYS + 30)
             with Session(engine) as session:
-                await ArchiveService(session).archive(
+                await make_archive_service(session).archive(
                     agent_id=agent_id, days=settings.ARCHIVE_DAYS
                 )
             query_json, query_ms = await post_json(
@@ -1631,7 +1634,7 @@ async def _run_redistill_case(
         )
         backdate_agent_records(agent_id, days=settings.ARCHIVE_DAYS + 30)
         with Session(engine) as session:
-            await ArchiveService(session).archive(
+            await make_archive_service(session).archive(
                 agent_id=agent_id, days=settings.ARCHIVE_DAYS
             )
         await trigger_redistill(agent_id=agent_id)

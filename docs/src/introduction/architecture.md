@@ -93,24 +93,29 @@ mindmap
 
 ## Data Flow
 
-- **Remember** (`POST /v1/mems/write`): write the L0 snapshot (TTL) → `sync_l0_to_l1`
-  commits `mems_l1_episodic` and best-effort upserts the Qdrant vector replica.
-  When `L0_PIPELINE_ENABLED=true`, a `write`/`append` event is also published to
-  the Redis Stream.
+- **Remember** (`POST /v1/mems/write`): write the L0 snapshot (TTL), then commit
+  the primary `mems_l1_episodic` record together with its outbox events in one
+  transaction. The Qdrant vector replica is synced asynchronously by the
+  `vector_sync` outbox handler, so the HTTP path stays fast and eventual
+  consistency is enforced by the outbox worker. When `L0_PIPELINE_ENABLED=true`,
+  a `write`/`append` event is also published to the Redis Stream.
 - **Recall** (`POST /v1/mems/query`): read active L0 snapshots across sessions,
   gather L1/L2 SQL candidates, combine with Qdrant vector search, then rank with
   a normalized base (0-1) plus intent weighting and freshness; lexical overlap
   uses CJK bigrams and ASCII words. Archived L1 is excluded by default.
-- **Distill** (`L1 → L2`): threshold-triggered. After each persisted write, a
-  background task checks pending records; when un-distilled reaches
-  `DISTILL_THRESHOLD` (default 100), LLM extraction and reconciliation create or
-  update profiles, facts, events, summaries and conflict logs, then sync summary
-  vectors. Records with `importance_score >= DISTILL_HIGH_IMPORTANCE_THRESHOLD`
-  (default 0.8) are distilled immediately (batch=1) instead of waiting for the
-  threshold. Batches are ordered by importance descending, then creation time.
-  No scheduled distill job.
-- **Archive** (`L1 → L3`): APScheduler daily at 03:00 moves records older than
-  `ARCHIVE_DAYS` into an atomic JSONL batch, records metadata, and marks L1 archived.
+- **Distill** (`L1 → L2`): threshold-triggered through the outbox. Every
+  persisted write enqueues a `distill_due` event (deduplicated on the global
+  aggregate); when un-distilled L1 records reach `DISTILL_THRESHOLD`
+  (default 100), the worker expands it into per-agent `distill_agent` events.
+  LLM extraction and reconciliation then create or update profiles, facts,
+  events, summaries and conflict logs, and sync summary vectors. Records with
+  `importance_score >= DISTILL_HIGH_IMPORTANCE_THRESHOLD` (default 0.8) enqueue
+  `distill_agent` directly (batch=1) instead of waiting for the threshold.
+  Batches are ordered by importance descending, then creation time. There is no
+  scheduled distill job.
+- **Archive** (`L1 → L3`): the APScheduler job at 03:00 enqueues `archive_agent`
+  events for identities with records older than `ARCHIVE_DAYS`; the outbox worker
+  then writes an atomic JSONL batch, records metadata, and marks L1 archived.
 - **Re-distill** (`L3 → L2`, manual): `POST /v1/mems/redistill` or
   `python -m mems.redistill` re-distills archived JSONL with the current
   `OPENAI_MODEL`, upgrading L2 via the version chain. Records already processed
@@ -124,20 +129,30 @@ mindmap
 
 - **API layer**: FastAPI router under `/v1/mems/*`; dependencies injected via
   `Session`, `RedisService`, `VectorService`, `EmbeddingService`.
-- **Services**: `redis_service` (L0), `l0_sync` (L0→L1), `vector_service`
-  (Qdrant async SDK), `embedding` (sentence-transformers or OpenAI), `llm_client`
-  (OpenAI-compatible), `distill`, `archive`, `scheduler` (APScheduler singleton),
-  `jsonl_utils`.
+- **Application services**: `WriteMemoryService` (Remember), `QueryMemoryService`
+  (Recall), `DistillApplicationService` (L1→L2), `ArchiveApplicationService`
+  (L1→L3), `VectorSyncApplicationService` (outbox vector sync).
+- **Domain layer**: aggregates and value objects for memory identity, L0/L1
+  memory, L2 knowledge, L3 archive, and outbox events; distillation, ranking,
+  and reconciliation live here as pure domain services.
+- **Infrastructure**: Redis/Qdrant/embedding/LLM adapters, SQLModel persistence,
+  repositories, and a transactional-outbox `OutboxWorker` that claims events,
+  dispatches them, and retries with exponential backoff. Run it in-process or as
+  a separate process with `python -m mems.worker`.
 - **Isolation**: hard boundaries `tenant_id` / `user_id` / `agent_id`; soft tag
   `scope`; `session_id` is optional provenance. Do not rely on `agent_id` alone
   for multi-user isolation.
 - **Failure tolerance**: vector replica sync and stream publication are
-  best-effort; distillation and archive run in the background with status columns
-  (`vector_status`, `archive_status`, `is_distilled`, `is_archived`).
+  best-effort; distillation and archive run through the outbox worker with status
+  columns (`vector_status`, `archive_status`, `is_distilled`, `is_archived`) and
+  retry/backoff semantics.
 
 ## Deployment Notes
 
 - Ports: Mems API `8210`, Qdrant `6333`, Redis `6379`.
+- The outbox worker runs inside the app lifespan by default
+  (`OUTBOX_WORKER_ENABLED=true`); set it to `false` and run
+  `python -m mems.worker` to scale it independently.
 - Tests run fully faked (`FakeRedisService`, `FakeVectorService`,
   `FakeEmbeddingService`) — no external services required.
 - Distillation needs an OpenAI-compatible LLM configuration; without credentials

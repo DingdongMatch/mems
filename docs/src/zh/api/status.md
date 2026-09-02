@@ -9,4 +9,5 @@
 - 近期失败数
 - L0 记忆输出管道是否启用
 - profile / fact / summary 计数
+- conflict 计数
 - stale memory 计数

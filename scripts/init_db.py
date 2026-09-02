@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from mems.database import init_db
+from mems.infrastructure.persistence.database import init_db
 from mems.config import settings
 
 

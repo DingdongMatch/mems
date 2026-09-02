@@ -1,13 +1,11 @@
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = PROJECT_ROOT / ".env"
-DEFAULT_SQLITE_DB = PROJECT_ROOT / "mems.db"
 
 
 class Settings(BaseSettings):
@@ -16,24 +14,7 @@ class Settings(BaseSettings):
     )
 
     # Database
-    DATABASE_URL: str = f"sqlite:///{DEFAULT_SQLITE_DB}"
-
-    @field_validator("DATABASE_URL", mode="before")
-    @classmethod
-    def normalize_sqlite_database_url(cls, value: str) -> str:
-        """Normalize relative SQLite URLs to absolute project paths.
-
-        将相对 SQLite 路径规范化为项目根目录下的绝对路径。
-        """
-        if not isinstance(value, str):
-            return value
-        prefix = "sqlite:///"
-        if not value.startswith(prefix) or value.startswith("sqlite:////"):
-            return value
-        db_path = value[len(prefix) :]
-        if not db_path or Path(db_path).is_absolute():
-            return value
-        return f"sqlite:///{(PROJECT_ROOT / db_path).resolve()}"
+    DATABASE_URL: str = "postgresql+psycopg://mems:mems@localhost:5432/mems"
 
     # Redis
     REDIS_HOST: str = "localhost"
@@ -77,6 +58,8 @@ class Settings(BaseSettings):
 
     # Scheduler
     SCHEDULER_ENABLED: bool = True
+    OUTBOX_WORKER_ENABLED: bool = True
+    WORKER_POLL_SECONDS: float = 1.0
     DISTILL_THRESHOLD: int = 100
     DISTILL_BATCH_SIZE: int = 50
     DISTILL_HIGH_IMPORTANCE_THRESHOLD: float = 0.8

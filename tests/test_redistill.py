@@ -8,15 +8,14 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from mems.config import settings
-from mems.models import (
+from mems.infrastructure.persistence.models import (
     MemsL1Episodic,
     MemsL2ConflictLog,
     MemsL2Fact,
     MemsL2ProfileItem,
     MemsRedistillProgress,
 )
-from mems.services.archive import ArchiveService
-from mems.services.redistill import trigger_redistill
+from mems.interfaces.bootstrap import make_archive_service, trigger_redistill
 
 
 def _write_and_archive(
@@ -50,7 +49,7 @@ def _write_and_archive(
 
     with Session(engine) as session:
         result = asyncio.run(
-            ArchiveService(session).archive(agent_id=agent_id, days=30)
+            make_archive_service(session).archive(agent_id=agent_id, days=30)
         )
         assert result.archived_count == 1
     return l1_id
@@ -164,7 +163,35 @@ def test_redistill_supersedes_old_values(test_app, monkeypatch):
                 ensure_ascii=False,
             )
 
-        monkeypatch.setattr("mems.services.distill.llm_chat", upgraded_llm_chat)
+        class UpgradedLLM:
+            async def chat(
+                self, messages, model=None, temperature=0.7, json_mode=False
+            ):
+                _ = (messages, model, temperature, json_mode)
+                return json.dumps(
+                    {
+                        "discarded": [],
+                        "profile_updates": [
+                            {
+                                "category": "like",
+                                "key": "technology",
+                                "value": "Rust",
+                                "confidence": 0.95,
+                                "evidence": "upgraded model",
+                            }
+                        ],
+                        "facts": [],
+                        "events": [],
+                        "conflict_candidates": [],
+                        "long_term_summary": "Upgraded summary.",
+                    },
+                    ensure_ascii=False,
+                )
+
+        monkeypatch.setattr(
+            "mems.interfaces.bootstrap.get_llm_port",
+            lambda: UpgradedLLM(),
+        )
         monkeypatch.setattr(settings, "OPENAI_MODEL", "gpt-5-version")
         second = asyncio.run(trigger_redistill())
         assert second.processed == 1
@@ -230,10 +257,15 @@ def test_redistill_llm_failure_does_not_mark_progress(test_app, monkeypatch):
     with TestClient(app) as client:
         _write_and_archive(client, "agent_fail", engine)
 
-        async def failing_llm(messages, model=None, temperature=0.7):
-            raise RuntimeError("LLM unavailable")
+        class FailingLLM:
+            async def chat(self, messages, model=None, temperature=0.7, json_mode=False):
+                _ = (messages, model, temperature, json_mode)
+                raise RuntimeError("LLM unavailable")
 
-        monkeypatch.setattr("mems.services.distill.llm_chat", failing_llm)
+        monkeypatch.setattr(
+            "mems.interfaces.bootstrap.get_llm_port",
+            lambda: FailingLLM(),
+        )
         result = asyncio.run(trigger_redistill())
         assert result.success is True
         assert result.processed == 0

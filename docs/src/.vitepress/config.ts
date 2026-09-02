@@ -51,6 +51,7 @@ export default withMermaid(defineConfig({
               items: [
                 { text: 'Query', link: '/api/query' },
                 { text: 'Write', link: '/api/write' },
+                { text: 'Redistill', link: '/api/redistill' },
                 { text: 'Status', link: '/api/status' },
                 { text: 'Health', link: '/api/health' }
               ]
@@ -109,6 +110,7 @@ export default withMermaid(defineConfig({
               items: [
                 { text: 'Query', link: '/zh/api/query' },
                 { text: 'Write', link: '/zh/api/write' },
+                { text: 'Redistill', link: '/zh/api/redistill' },
                 { text: 'Status', link: '/zh/api/status' },
                 { text: 'Health', link: '/zh/api/health' }
               ]

@@ -9,4 +9,5 @@ Inspect dependency health and built-in pipeline status.
 - recent failure count
 - whether the L0 memory output pipeline is enabled
 - profile, fact, and summary counts
+- conflict count
 - stale memory counts

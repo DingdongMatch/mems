@@ -13,8 +13,8 @@ uv run python -m mems.main
 
 ```bash
 uv run pytest
-uv run ruff check src tests
-uv run mypy src
+uv run ruff check src/ tests/ scripts/
+uv run mypy src/mems/
 ```
 
 ## Contribution Flow

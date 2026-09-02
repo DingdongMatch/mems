@@ -43,28 +43,39 @@ Mems 记忆随模型进化：L3 归档可再蒸馏，模型升级后无损升级
 
 ```
 src/mems/
-├── main.py               # FastAPI 入口 + lifespan + OpenAPI 描述
+├── main.py               # FastAPI 入口 + lifespan（含进程内 Outbox worker）
 ├── config.py             # pydantic-settings 配置（从 .env 读取）
-├── models.py             # SQLModel 数据库模型
-├── schemas/              # Pydantic 请求/响应模型
-├── database.py           # SQLModel engine + init_db()
+├── redistill.py          # CLI 入口 python -m mems.redistill
+├── worker.py             # 独立 Outbox worker 入口 python -m mems.worker
 │
-├── services/
-│   ├── scheduler.py      # APScheduler 调度服务（单例）
-│   ├── redis_service.py  # Redis L0 热缓存服务（单例）
-│   ├── l0_sync.py        # L0→L1 同步函数
-│   ├── vector_service.py # Qdrant Async SDK 封装
-│   ├── embedding.py      # Embedding 抽象层
-│   ├── ranking.py        # 混合召回排序与词法打分纯函数
-│   ├── llm_client.py     # OpenAI-compatible LLM 客户端
-│   ├── distill_prompts.py# 蒸馏提示词模板与常量
-│   ├── distill.py        # L1→L2 蒸馏服务
-│   ├── archive.py        # L1→L3 归档服务
-│   ├── redistill.py      # L3→L2 手动再蒸馏服务
-│   └── jsonl_utils.py    # JSONL 读写工具
+├── domain/               # 领域层：实体/聚合/值对象/领域服务与端口（不依赖基础设施）
+│   ├── identity.py       # MemoryIdentity / TimeRange / Importance 值对象
+│   ├── memory.py         # L0 WorkingMemory / L1 EpisodicMemory 聚合
+│   ├── knowledge.py      # L2 Profile/Fact/Event/Summary/ConflictLog 实体
+│   ├── archive.py        # L3 ArchiveBatch 聚合
+│   ├── outbox.py         # OutboxEvent 值对象与事件类型
+│   ├── events.py         # L0 管道集成事件
+│   ├── ports.py          # 仓储/外部服务/UoW/HealthCheck/Outbox 端口（Protocol）
+│   └── services/         # 蒸馏策略、排序、对账等纯领域服务
 │
-└── routers/
-    └── memories.py       # /v1/mems/* 公开接口
+├── application/          # 应用服务与用例编排（只依赖 domain）
+│   ├── commands.py       # 命令/结果/读模型
+│   ├── write_service.py  # RememberMemory 用例
+│   ├── query_service.py  # RecallMemories 编排器
+│   ├── status_service.py # 状态与监控
+│   ├── distill_service.py# L1→L2 蒸馏
+│   ├── archive_service.py# L1→L3 归档
+│   ├── redistill_service.py # 再蒸馏纯函数辅助
+│   ├── vector_sync_service.py # vector_sync Outbox 处理器
+│   └── retrievers.py     # 按来源召回检索器
+│
+├── infrastructure/       # 基础设施实现
+│   ├── external/         # Redis/Qdrant/Embedding/LLM/调度器/时钟/JSONL 适配器
+│   └── persistence/      # SQLModel 模型、mapper、仓储、UoW、健康检查
+│
+└── interfaces/           # 接口与组合根
+    ├── api/              # FastAPI 路由、请求 schema、依赖注入
+    └── bootstrap.py      # 后台服务装配、触发器、OutboxWorker
 
 docs/
 ├── package.json          # VitePress 文档站脚本
@@ -80,16 +91,16 @@ docs/
 
 ### 3.1 新增 API 路由
 
-1. 在 `routers/` 创建新文件
+1. 在 `interfaces/api/` 创建新路由文件
 2. 注册到 `main.py` 的 `app.include_router()`
-3. 使用依赖注入获取 `session`、`redis`、`vector_service`
+3. 使用依赖注入获取 session、仓储、端口与服务
 
 ```python
-# routers/example.py
+# interfaces/api/example.py
 from fastapi import APIRouter, Depends
 from sqlmodel import Session
 
-from mems.database import get_session
+from mems.infrastructure.persistence.database import get_session
 
 router = APIRouter(prefix="/example", tags=["Example"])
 
@@ -184,6 +195,7 @@ class QueryResultItem(BaseModel):
     source: str        # l0_hot / l1_episodic / l2_profile / l2_fact / l2_event / l2_summary
     content: str
     score: float
+    created_at: datetime | None
     source_l1_ids: list[int]
     session_id: str | None
     tenant_id / user_id / scope
@@ -191,7 +203,8 @@ class QueryResultItem(BaseModel):
 
 ### 3.2 新增数据库模型
 
-在 `models.py` 中添加 SQLModel 类：
+在 `infrastructure/persistence/models.py` 中添加 SQLModel 类，并在
+`infrastructure/persistence/mappers.py` 中补充领域对象与 ORM 的映射：
 
 ```python
 class MyModel(SQLModel, table=True):
@@ -202,14 +215,15 @@ class MyModel(SQLModel, table=True):
 
 ### 3.3 新增服务
 
-服务放在 `services/` 目录：
+应用用例服务放在 `application/`，只通过构造器注入领域端口；基础设施适配器
+放在 `infrastructure/external/` 或 `infrastructure/persistence/`：
 
 - **同步函数**: 直接实现
 - **异步函数**: 使用 `async def`
 - **单例服务**: 使用模块级单例（如 `redis_service`）
 
 ```python
-# services/example.py
+# application/example_service.py
 class ExampleService:
     def __init__(self):
         self._cache = {}
@@ -256,6 +270,9 @@ from mems.config import settings
 session: Session = Depends(get_session)
 ```
 
+应用服务通过 `UnitOfWork` 端口统一 commit/rollback，仓储不再各自提交事务；
+健康检查走 `HealthCheckPort`（`SqlDatabaseHealthCheck`）。
+
 ### 4.2 Redis 服务
 
 ```python
@@ -264,6 +281,8 @@ redis: RedisService = Depends(get_redis_service)  # 测试环境自动注入 Fak
 l0 = await redis.write(tenant_id=..., user_id=..., agent_id=..., session_id=..., messages=..., content=...)
 l0 = await redis.read(agent_id=..., session_id=..., tenant_id=..., user_id=..., scope=...)
 ```
+
+L0 Redis key 统一复用 `MemoryIdentity.redis_key()`，避免适配器重复实现 key 规则。
 
 ### 4.3 Embedding 服务
 
@@ -276,9 +295,24 @@ vectors = await embedding_service.embed(["text"])
 
 ```python
 vector_service = await get_vector_service()  # 使用 Depends 注入以保证测试覆盖
-await vector_service.upsert("collection_name", points)
+await vector_service.upsert_episodic("collection_name", memory, vector)
+await vector_service.upsert_summary("collection_name", summary, vector)
 results = await vector_service.search("collection_name", query_vector, filters={...})
 ```
+
+payload 构造下沉到向量适配器，应用层只传领域对象，不感知 Qdrant 数据形状。
+
+### 4.5 Outbox 与 Worker
+
+- `domain/outbox.py` 定义 `OutboxEvent` 与 `OutboxEventType`
+  （`vector_sync` / `archive_agent` / `distill_agent` / `distill_due`）。
+- `mems_outbox` 表 + `OutboxRepository` 端口承载事务性副作用；写入 L1 时把
+  `vector_sync` 与蒸馏触发事件与主记录在同一事务提交。
+- `interfaces/bootstrap.py` 中的 `OutboxWorker` 原子 claim 事件（`pending`→
+  `claimed`，带 owner 与租约超时），按事件类型分发给处理器，成功 `done`、
+  失败指数退避后回到 `pending` 重试，实现最终一致与分布式互斥。
+- 默认在 `main.py` lifespan 内启动进程内 worker；`python -m mems.worker`
+  可作为独立 worker 水平扩展。
 
 ---
 
@@ -286,34 +320,37 @@ results = await vector_service.search("collection_name", query_vector, filters={
 
 ### 5.1 L0→L1 自动双写
 
-用户调用 `/v1/mems/write` 时，自动同步到 L1。
+用户调用 `/v1/mems/write` 时，L0 缓存同步写，L1 主记录与 `vector_sync` 以及
+蒸馏触发事件在同一事务提交；向量副本由 Outbox worker 异步最终一致。
 
 ### 5.2 蒸馏任务
 
-- **阈值触发**: 每次成功写入 L1 后，在后台检查未蒸馏记录；达到
-  `DISTILL_THRESHOLD`（默认 100）即触发蒸馏
+- **阈值触发**: 普通写入 enqueue `distill_due` 事件（按 `aggregate_id=global`
+  去重），worker 检查未蒸馏记录；达到 `DISTILL_THRESHOLD`（默认 100）后展开
+  为按 agent 的 `distill_agent` 事件
 - **高价值即时**: `importance_score >= DISTILL_HIGH_IMPORTANCE_THRESHOLD`
-  （默认 0.8）的记录写入后立即蒸馏（batch=`DISTILL_IMMEDIATE_BATCH_SIZE`，
-  默认 1），不等待全局阈值
-- **无定时任务**: 蒸馏不依赖 cron，由写入路径后台触发
-  （`trigger_distill_if_due` / `distill_high_value_if_idle`），同一进程内只允许
-  一个运行实例
+  （默认 0.8）的记录写入后 enqueue `distill_agent`（batch=
+  `DISTILL_IMMEDIATE_BATCH_SIZE`，默认 1），不等待全局阈值
+- **无定时任务**: 蒸馏不依赖 cron，由写入路径 enqueue、Outbox worker 消费；
+  并发互斥由 Outbox 状态机 claim 承担，不依赖进程内布尔锁
 - **批内排序**: 非 force 蒸馏按 `importance_score DESC, created_at ASC` 取批，
   保证高价值优先处理
 - **运行前提**: 当前蒸馏依赖可用的 OpenAI-compatible LLM 配置
 
 ```python
-# services/distill.py
-async def trigger_distill_if_due() -> Dict:
-    ...
+# application/distill_service.py
+class DistillApplicationService:
+    async def distill(self, agent_id, batch_size, force, min_importance) -> DistillResponse:
+        ...
 ```
 
 ### 5.3 归档任务
 
-- **定时触发**: 每天 3:00 AM
+- **定时触发**: 每天 3:00 AM，调度器 enqueue `archive_agent` 事件；worker 执行
+  JSONL 文件写入与 `mark_archived`。
 
 ```python
-# services/archive.py
+# interfaces/bootstrap.py
 async def trigger_archive_automatically(agent_id: str = None) -> Dict:
     ...
 ```
@@ -321,9 +358,11 @@ async def trigger_archive_automatically(agent_id: str = None) -> Dict:
 ### 5.4 再蒸馏任务（手动）
 
 - **触发方式**: `POST /v1/mems/redistill` 或 CLI `python -m mems.redistill`
-- **输入输出**: 读取 L3 JSONL 归档，复用 `DistillService.process_source`
-  走提取 + 对账 + 版本链升级 L2；`source_id` 保留原始 L1 id，并记录
+- **输入输出**: 读取 L3 JSONL 归档，复用 `DistillApplicationService.process_source`
+  走提取 + 确定性对账 + 版本链升级 L2；`source_id` 保留原始 L1 id，并记录
   `l3_path/l3_line` 兜底证据指针
+- **对账收敛**: LLM 只做结构化提取，`ReconciliationService` 是唯一确定性对账
+  入口，不再有 LLM 对账与代码对账的双重逻辑
 - **去重**: 表 `mems_redistill_progress(content_hash, model)`，唯一键
   `(content_hash, model)`，`model` = 运行时 `settings.OPENAI_MODEL`
 - **过滤**: 支持 agent / created_at 时间范围 / min_importance，单次上限
@@ -339,10 +378,11 @@ async def trigger_archive_automatically(agent_id: str = None) -> Dict:
 当前调度器只负责归档任务（蒸馏为阈值触发，无定时任务）：
 
 ```python
-from mems.services.scheduler import scheduler_service
+from mems.infrastructure.external.scheduler import scheduler_service
+from mems.interfaces.bootstrap import trigger_archive_automatically
 
 # 在 main.py lifespan 中注册
-scheduler_service.add_archive_job(func, hour=3, minute=0)
+scheduler_service.add_archive_job(trigger_archive_automatically, hour=3, minute=0)
 scheduler_service.start()
 ```
 
@@ -380,11 +420,12 @@ except Exception as e:
 ### 7.3 事务处理
 
 ```python
+uow: UnitOfWork = ...  # 通过构造器注入
 try:
-    session.add(record)
-    session.commit()
+    repository.add(record)
+    uow.commit()
 except Exception:
-    session.rollback()
+    uow.rollback()
     raise
 ```
 
@@ -416,8 +457,10 @@ uv run mypy src/
 cd docs && npm run build
 ```
 
-测试环境使用 `tests/conftest.py` 中的 `FakeRedisService`、`FakeVectorService`、`FakeEmbeddingService`，
-不需要运行 Docker 服务。新增端点时也需要使用 `Depends` 注入以保证测试覆盖。
+测试环境使用 `tests/conftest.py` 中的 Fake store/vector/embedding/LLM，不需要
+运行 Docker 服务。测试默认关闭 Outbox worker（`OUTBOX_WORKER_ENABLED=False`），
+需要验证最终一致时手动 `worker.run_once()` 排空。新增端点时也需要使用
+`Depends` 注入以保证测试覆盖。
 
 ---
 
@@ -439,12 +482,14 @@ uvicorn mems.main:app --reload --port 8210
 
 | 配置 | 说明 |
 |------|------|
-| `DATABASE_URL` | 数据库连接 |
+| `DATABASE_URL` | PostgreSQL 连接（`postgresql+psycopg`） |
 | `REDIS_HOST/PORT` | Redis 连接 |
 | `QDRANT_URL` / `QDRANT_HOST/PORT` | Qdrant 连接 |
 | `EMBEDDING_PROVIDER` | embedding 模型 (sentence-transformers/openai) |
 | `OPENAI_*` | OpenAI-compatible LLM / embedding 配置 |
 | `SCHEDULER_ENABLED` | 启用调度器 |
+| `OUTBOX_WORKER_ENABLED` | 是否在 lifespan 内启动进程内 Outbox worker |
+| `WORKER_POLL_SECONDS` | 独立 worker 轮询间隔 |
 | `REDISTILL_BATCH_SIZE` | 每次手动再蒸馏最多处理的 L3 记录数 |
 
 ---
@@ -466,4 +511,4 @@ Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) file for 
 
 ---
 
-*最后更新: 2026-07-27*
+*最后更新: 2026-09-02*

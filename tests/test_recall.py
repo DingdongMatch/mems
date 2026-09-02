@@ -4,7 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from mems.services.ranking import (
+from mems.domain.services.ranking import (
+    ScoredMemory,
     l1_base,
     l2_entity_base,
     l2_event_base,
@@ -12,7 +13,6 @@ from mems.services.ranking import (
     lexical_overlap,
     sort_results,
 )
-from mems.schemas import QueryResultItem
 
 
 def test_lexical_overlap_supports_chinese():
@@ -111,19 +111,19 @@ def test_sort_results_is_deterministic():
     同分结果按创建时间倒序，顺序确定。
     """
     now = datetime.now(timezone.utc)
-    older = QueryResultItem(
+    older = ScoredMemory(
         source="l1_episodic",
         content="older",
         score=1.0,
         created_at=now - timedelta(days=1),
     )
-    newer = QueryResultItem(
+    newer = ScoredMemory(
         source="l2_fact",
         content="newer",
         score=1.0,
         created_at=now,
     )
-    no_date = QueryResultItem(source="l0_hot", content="nodate", score=1.0)
+    no_date = ScoredMemory(source="l0_hot", content="nodate", score=1.0)
 
     sorted_once = sort_results([no_date, older, newer])
     sorted_twice = sort_results([no_date, older, newer])
