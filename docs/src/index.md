@@ -15,33 +15,19 @@ hero:
 
 features:
   - title: "L0 Hot Memory Cache"
-    details: "Redis-backed fast recall for recent memories, without owning runtime state."
+    details: "Redis-backed snapshots of recent sessions deliver millisecond recall of active context."
+  - title: "L1 Episodic Memory Ledger"
+    details: "SQL persists raw narratives and structured messages, with Qdrant vector copies; replayable and auditable, it is the source of truth for online memory."
   - title: "L2 Knowledge Distillation"
-    details: "An automated LLM pipeline turns raw L1 narratives into reusable semantic knowledge."
-  - title: "Grounded Memory"
-    details: "Distilled outputs stay linked to L1 evidence so long-term memory remains traceable."
-  - title: "L3 Archive"
-    details: "A text-first JSONL archive keeps ultra-long-term memory readable, portable, and durable."
+    details: "A background LLM pipeline distills raw narratives into profiles, facts, events, and summaries — stable, reusable semantic knowledge."
+  - title: "L3 Century-Scale Archive"
+    details: "A text-first JSONL archive keeps ultra-long-term memory readable, portable, and re-distillable — resilient to hardware changes and format obsolescence."
+  - title: "Evidence Traceability & Versioning"
+    details: "Every L2 insight keeps its L1 source and version chain, so long-term knowledge remains traceable and explainable even after re-distillation."
   - title: "L3 → L2 Re-Distillation"
-    details: "The archive is not a dead end. When your model improves, re-distill archived memories and upgrade long-term knowledge through the version chain."
+    details: "The archive is not a dead end. Upgrade your model, re-distill archived memories, and evolve L2 knowledge losslessly through the version chain — the system grows with each model generation."
   - title: "Production Isolation"
-    details: "Tenant, user, agent, and session boundaries support SaaS and enterprise deployment."
+    details: "Built-in hard boundaries for tenant, user, and agent, plus session and scope tags, fit multi-tenant SaaS and enterprise deployments."
   - title: "Atomic Integration"
-    details: "Third-party agents integrate with one compact flow: Remember, then Recall."
+    details: "Third-party agents plug in with just Remember and Recall — no storage plumbing to manage."
 ---
-
-## Start Here
-
-- [Quick Start](/quick-start)
-- [Integration Overview](/integration/overview)
-- [Architecture Overview](/introduction/architecture)
-- [Benchmarks](/quality/benchmarks)
-
-## Core Design Philosophy: Why Mems
-
-- **⚡ Hot memory cache (L0)** with Redis-backed fast recall
-- **🧠 Asynchronous knowledge distillation (L2)** from raw L1 history to stable semantic facts
-- **🔍 Evidence grounding** so distilled memory remains traceable to L1 source material
-- **📜 Century-scale archive (L3)** with text-first JSONL retention
-- **🛡️ Production-grade isolation** across tenant, user, agent, and session boundaries
-- **🔌 Atomic integration** through `Remember -> Recall`

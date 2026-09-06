@@ -57,8 +57,8 @@ app = FastAPI(
     title="Mems - Layered Memory System / 分层记忆系统",
     description=(
         "## Overview / 概述\n"
-        "Mems is an industrial-grade memory hub solution for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.\n\n"
-        "Mems 是一套定位工业级的 AI Agent 记忆中枢方案。它通过四层冷热解耦架构，为智能体提供具备人格一致性、低成本检索和结构化进化的记忆基座。\n\n"
+        "Mems is an industrial-grade memory infrastructure for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.\n\n"
+        "Mems 是一套定位工业级的 AI Agent 记忆基础设施。它通过四层冷热解耦架构，为智能体提供具备人格一致性、低成本检索和结构化进化的记忆基座。\n\n"
         "## Core Design Philosophy / 核心设计哲学\n"
         "Unlike a single-layer vector database or basic RAG stack, Mems is designed to control memory entropy in long-running agents:\n\n"
         "- **⚡ Hot memory cache (L0)**: Redis-backed recent-memory cache for fast recall without owning agent runtime state.\n"

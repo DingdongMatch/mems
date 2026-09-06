@@ -5,6 +5,45 @@
 *L0 热缓存 → L1 情景账本 → L2 蒸馏知识 → L3 冷归档；另有一条默认关闭的 L0
 输出流，供自带代码的外部消费者使用。*
 
+## 领域设计架构图
+
+Mems 采用领域中心的分层结构：接口层接收 HTTP、调度与 CLI 触发，应用层编排
+用例，领域层承载实体与纯规则并定义端口，基础设施层实现这些端口。依赖方向始终
+指向领域层；组合根（bootstrap）负责把具体实现装配进应用服务。
+
+```mermaid
+flowchart TB
+    subgraph IF[接口层 interfaces]
+        API["FastAPI 路由 /v1/mems/*"]
+        BOOT["interfaces/bootstrap（OutboxWorker + 调度/CLI 触发）"]
+    end
+
+    subgraph APP[应用层 application]
+        SRV["Write / Query / Distill / Archive / Redistill / VectorSync 应用服务"]
+    end
+
+    subgraph DOM[领域层 domain]
+        ENT["实体 / 聚合 / 值对象"]
+        DSVC["蒸馏、排序、对账等纯领域服务"]
+        PORTS["Ports（Protocol 接口）"]
+    end
+
+    subgraph INFRA[基础设施层 infrastructure]
+        SQL["SQLModel 模型 / 仓储 / UnitOfWork"]
+        EXT["Redis / Qdrant / Embedding / LLM / Scheduler / JSONL"]
+    end
+
+    API --> SRV
+    BOOT --> SRV
+    SRV --> ENT
+    SRV --> DSVC
+    SRV --> PORTS
+    SQL -.->|实现 Ports| PORTS
+    EXT -.->|实现 Ports| PORTS
+    BOOT -.->|装配依赖| SQL
+    BOOT -.->|装配依赖| EXT
+```
+
 ## 四层设计
 
 | 层级 | 职责 | 存储 | 关键实体 |
@@ -13,82 +52,6 @@
 | `L1` | 情景记忆账本：在线事实来源，支持回放与审计 | SQL + Qdrant | `mems_l1_episodic`；Qdrant 集合 `agent_{agent_id}`（派生向量副本） |
 | `L2` | 带来源链路与版本管理的蒸馏长期知识 | SQL（+ 摘要向量索引） | `mems_l2_profile_item`、`mems_l2_fact`、`mems_l2_event`、`mems_l2_summary`、`mems_l2_conflict_log` |
 | `L3` | 跨世纪冷归档，格式可移植 | JSONL 文件 | `storage/l3_archive/*.jsonl`、`mems_l3_archive` 批次元数据 |
-
-## 记忆分类的认知科学视角
-
-Mems 的分层设计借用了认知科学对记忆系统的经典分类。理解这些概念有助于回答
-"为什么是四层、每一层在回答什么问题"。
-
-### 核心概念
-
-- **陈述性记忆（declarative memory）**：能够被有意识地回忆并表述出来的记忆，
-  包含情景记忆与语义记忆两类
-  [Squire, 2004](https://doi.org/10.1016/j.nlm.2004.06.005)。
-- **情景记忆（episodic memory）**：对具体事件的记忆——"某时、某地、经历了
-  什么"。Endel Tulving 于 1972 年首次将其与语义记忆区分
-  [Tulving, 1972](https://en.wikipedia.org/wiki/Episodic_memory)，2002 年进一步
-  将其描述为"心理时间旅行"（mental time travel），即重新体验过去的特定事件
-  [Tulving, 2002](https://doi.org/10.1146/annurev.psych.53.100901.135114)。
-  中文心理学文献中也译作"情节记忆"。
-- **语义记忆（semantic memory）**：关于世界的一般性知识——事实、概念、词义
-  等，不依赖特定的时空，也不要求回忆者亲自经历过
-  [Tulving, 1972](https://en.wikipedia.org/wiki/Semantic_memory)。
-- **记忆巩固（memory consolidation）**：新形成的记忆随时间逐步稳定、转化为
-  长期记忆的过程 [Squire & Zola-Morgan,
-  1991](https://doi.org/10.1126/science.1896849)。
-
-### 认知科学概念与 Mems 实现的映射
-
-| 认知科学概念 | Mems 对应 | 设计如何实现 |
-| --- | --- | --- |
-| 情景记忆 | `L1` 情景账本（`mems_l1_episodic`） | `content` 保存原始叙事；`messages_json` 保留结构化原文用于保真回放与审计；`source_l1_ids` 提供证据溯源；Qdrant 向量副本支持语义召回 |
-| 语义记忆 | `L2` 蒸馏知识：画像（`mems_l2_profile_item`）、事实（`mems_l2_fact`）、事件（`mems_l2_event`）、摘要（`mems_l2_summary`） | 画像 = `category + key + value` 稳定断言（例：`preference / coffee / 美式` → "用户偏好美式咖啡"）；事实 = `subject + predicate + object` 三元组（例：`Mems → uses → Qdrant`）；事件 = `subject + action + object + time_hint`（例：`user → completed → onboarding @ 2026-08-01`）；摘要 = 滚动长文 + 向量副本（例："用户近期主要在参与 Mems 文档写作"） |
-| 记忆巩固 | `L3` 冷归档 → `L3→L2` 再蒸馏 | 超过 `ARCHIVE_DAYS` 的记录原子写入 JSONL 归档；模型升级后手动再蒸馏，通过版本链升级 L2 知识 |
-| 工作记忆（类比） | `L0` 热缓存 | 近期记忆的快速召回窗口（Redis TTL 快照），不管理运行时状态 |
-
-> **设计边界**：Mems 借用认知科学的分类来启发分层架构，是一种设计隐喻，
-> 并不声称模拟生物记忆系统。Mems 只负责存储和召回记忆，不管理运行时状态。
-
-### 记忆分类思维导图
-
-```mermaid
-mindmap
-  root((记忆 Memory))
-    陈述性 Declarative
-      episodic["情景记忆 Episodic：具体经历"]
-        l1["L1 情景账本 Episodic Ledger"]
-          c1["content 原始叙事"]
-          c2["messages_json 保真回放"]
-          c3["source_l1_ids 证据溯源"]
-          c4["Qdrant 向量副本"]
-      semantic["语义记忆 Semantic：一般知识"]
-        p["L2 画像 Profile：category+key+value"]
-        f["L2 事实 Fact：subject-predicate-object"]
-        e["L2 事件 Event：subject-action-object+time_hint"]
-        s["L2 摘要 Summary：滚动长文+向量"]
-    长期巩固 Consolidation
-      l3["L3 冷归档 Archive"]
-      rd["L3→L2 再蒸馏 Re-distill：模型升级后重新提炼"]
-    工作记忆类比 Working Memory
-      l0["L0 热缓存 Hot Cache"]
-```
-
-### 参考文献与扩展阅读
-
-- Tulving, E. (1972). *Episodic and semantic memory*. In E. Tulving & W.
-  Donaldson (Eds.), *Organization of Memory* (pp. 381–403). Academic Press.
-- Tulving, E. (2002). Episodic memory: From mind to brain. *Annual Review of
-  Psychology*, 53, 1–25. <https://doi.org/10.1146/annurev.psych.53.100901.135114>
-- Squire, L. R. (2004). Memory systems of the brain: A brief history and current
-  perspective. *Neurobiology of Learning and Memory*, 82(3), 171–177.
-  <https://doi.org/10.1016/j.nlm.2004.06.005>
-- Squire, L. R., & Zola-Morgan, S. (1991). The medial temporal lobe memory
-  system. *Science*, 253(5026), 1380–1386.
-  <https://doi.org/10.1126/science.1896849>
-- Wikipedia: [Episodic memory](https://en.wikipedia.org/wiki/Episodic_memory) ·
-  [Semantic memory](https://en.wikipedia.org/wiki/Semantic_memory) ·
-  [Declarative memory](https://en.wikipedia.org/wiki/Declarative_memory) ·
-  [Memory consolidation](https://en.wikipedia.org/wiki/Memory_consolidation)
 
 ## 数据流
 
@@ -135,6 +98,153 @@ mindmap
 - **失败容忍**：向量副本同步与流发布均为尽力而为；蒸馏、归档在后台执行，
   由 Outbox worker 通过状态列（`vector_status`、`archive_status`、
   `is_distilled`、`is_archived`）与重试/退避语义保证最终一致。
+
+## 流程图
+
+一张记忆从写入到沉淀/归档的异步生命周期总览（详细文字见上节「数据流」）：
+
+```mermaid
+flowchart LR
+    CALLER["调用方 Agent"]
+    WAPI["POST /v1/mems/write"]
+    L0[("L0 Redis 快照 TTL")]
+    DB[(L1 SQL + Outbox 事件)]
+    WORKER["Outbox Worker"]
+    VEC["VectorSync 处理器"]
+    QD[("Qdrant 向量副本")]
+    DISTILL["Distill 处理器"]
+    LLM["LLM 提取 + 对账"]
+    L2[(L2 画像/事实/事件/摘要 + 冲突日志)]
+    ARCHIVE["Archive 处理器（每日 03:00）"]
+    L3[["L3 JSONL 归档"]]
+    RD["再蒸馏 API / CLI"]
+    STREAM[("Redis Stream（默认关闭）")]
+
+    CALLER --> WAPI
+    WAPI --> L0
+    WAPI -->|同事务提交| DB
+    DB --> WORKER
+    WORKER --> VEC
+    VEC --> QD
+    WORKER --> DISTILL
+    DISTILL --> LLM
+    LLM --> L2
+    DB --> ARCHIVE
+    ARCHIVE --> L3
+    L3 --> RD
+    RD --> LLM
+    WAPI -.->|L0_PIPELINE_ENABLED| STREAM
+```
+
+## 时序图
+
+### Remember：写入与异步最终一致
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 调用方
+    participant A as Write API
+    participant L0 as L0 Redis
+    participant DB as L1 SQL + Outbox
+    participant W as Outbox Worker
+    participant Q as Qdrant
+    participant LLM as 蒸馏流水线
+
+    C->>A: POST /v1/mems/write
+    A->>L0: 写入热快照（TTL）
+    A->>DB: 同事务写入 L1 + Outbox 事件
+    DB-->>A: l1_id
+    A-->>C: MemsWriteResponse
+    W->>DB: claim vector_sync / distill 事件
+    W->>Q: 生成并 upsert 向量副本
+    W->>LLM: 蒸馏提取 + 对账
+    LLM-->>W: 更新 L2 知识
+```
+
+### Recall：跨层混合召回
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 调用方
+    participant A as Query API
+    participant L0 as L0 Redis
+    participant Q as Qdrant
+    participant DB as SQL（L1 / L2）
+
+    C->>A: POST /v1/mems/query（query + identity + top_k）
+    A->>A: 关键词意图推断（intent_bonus）
+    par 并行检索
+        A->>L0: 读取活跃快照
+        A->>Q: 向量检索 L1 / L2 摘要
+        A->>DB: L1 活跃记录 + L2 SQL 候选
+    end
+    A->>A: 合并排序（按来源组合因子）
+    A-->>C: results + source_l1_ids
+```
+
+### Re-distill：L3 → L2 再蒸馏
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as 运维 / 调用方
+    participant R as Redistill API / CLI
+    participant L3 as L3 JSONL 归档
+    participant P as redistill 进度表
+    participant D as 蒸馏流水线
+    participant L2 as L2 SQL
+
+    C->>R: POST /v1/mems/redistill
+    R->>L3: 读取归档记录（含身份/时间/重要度过滤）
+    R->>P: 按 content_hash + model 去重
+    alt 未处理或模型已变更
+        R->>D: 用当前 OPENAI_MODEL 提取 + 对账
+        D->>L2: 版本链升级（supersedes + conflict_log）
+        R->>P: 记录 l3_path / l3_line
+    else 已用当前模型处理
+        R-->>C: skipped
+    end
+    R-->>C: processed / created / updated / skipped
+```
+
+## 数据库设计
+
+在线记忆与运营状态统一落在 PostgreSQL，按记忆层次与流水线职责分组：
+
+| 分组 | 表 | 关键字段 |
+| --- | --- | --- |
+| L1 情景账本 | `mems_l1_episodic` | `content`、`messages_json`、`vector_id`、`importance_score`、`is_distilled`、`is_archived`、`vector_status`、`archive_status`、`created_at` |
+| L2 画像 | `mems_l2_profile_item` | `category`、`key`、`value`、`confidence`、`status`、`source_l1_ids`、`supersedes_id`、`version` |
+| L2 事实 | `mems_l2_fact` | `subject`、`predicate`、`object`、`fact_type`、`confidence`、`status`、`source_l1_ids`、`supersedes_id`、`version` |
+| L2 事件 | `mems_l2_event` | `subject`、`action`、`object`、`time_hint`、`importance_score`、`source_l1_ids`、`created_at` |
+| L2 摘要 | `mems_l2_summary` | `summary_type`、`content`、`vector_id`、`vector_status`、`source_l1_ids`、`created_at`、`last_verified_at` |
+| L2 冲突审计 | `mems_l2_conflict_log` | `memory_type`、`old_value`、`new_value`、`resolution`、`reason`、`source_l1_ids` |
+| L3 批次元数据 | `mems_l3_archive` | identity 字段、`time_period`、`file_path`、`record_count`、`archived_at` |
+| 再蒸馏进度 | `mems_redistill_progress` | `content_hash`、`model`、`l3_path`、`l3_line`、`processed_at`（唯一 `content_hash + model`） |
+| 流水线 | `mems_outbox` | `event_type`、`aggregate_id`、`payload`、`status`、`attempts`、`owner`、`available_at` |
+
+以下为逻辑关系示意，不代表数据库外键约束：
+
+- `source_l1_ids` 以数组形式逻辑引用 `mems_l1_episodic.id`
+- `supersedes_id` 是 profile/fact 表内的版本链自引用
+- `l3_path` / `l3_line` 指向归档 JSONL 的证据位置
+- outbox 事件按身份聚合触发向量同步、蒸馏与归档
+
+### ER图
+
+```mermaid
+erDiagram
+    MEMS_L1_EPISODIC ||--o{ MEMS_L2_PROFILE_ITEM : "证据（source_l1_ids）"
+    MEMS_L1_EPISODIC ||--o{ MEMS_L2_FACT : "证据（source_l1_ids）"
+    MEMS_L1_EPISODIC ||--o{ MEMS_L2_EVENT : "证据（source_l1_ids）"
+    MEMS_L1_EPISODIC ||--o{ MEMS_L2_SUMMARY : "证据（source_l1_ids）"
+    MEMS_L2_PROFILE_ITEM ||--o{ MEMS_L2_CONFLICT_LOG : "版本/冲突审计"
+    MEMS_L2_FACT ||--o{ MEMS_L2_CONFLICT_LOG : "版本/冲突审计"
+    MEMS_L3_ARCHIVE ||--o{ MEMS_REDISTILL_PROGRESS : "L3 证据指针"
+    MEMS_L1_EPISODIC ||--o{ MEMS_OUTBOX : "异步事件"
+```
 
 ## 部署说明
 

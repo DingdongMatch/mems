@@ -1,0 +1,123 @@
+.mermaid-zoom-wrap {
+  position: relative;
+}
+
+.image-zoom-wrap {
+  display: inline-block;
+}
+
+.image-zoom-wrap img {
+  cursor: zoom-in;
+}
+
+.mermaid-zoom-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.2s, color 0.2s;
+}
+
+.mermaid-zoom-btn:hover {
+  color: var(--vp-c-brand-1);
+  opacity: 1;
+}
+
+.mermaid-zoom-modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  padding: 1.25rem;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.mermaid-zoom-modal.open {
+  display: flex;
+}
+
+.mermaid-zoom-box {
+  display: flex;
+  flex-direction: column;
+  width: min(96vw, 1400px);
+  max-height: 92vh;
+  margin: auto;
+  overflow: hidden;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-1);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
+}
+
+.mermaid-zoom-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.mermaid-zoom-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.mermaid-zoom-close {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.78rem;
+  color: var(--vp-c-text-2);
+  background: var(--vp-c-bg-soft);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.mermaid-zoom-close:hover {
+  color: var(--vp-c-brand-1);
+}
+
+.mermaid-zoom-stage {
+  overflow: auto;
+  padding: 1.25rem;
+}
+
+.mermaid-zoom-stage svg {
+  display: block;
+  max-width: none !important;
+  width: auto;
+  height: auto;
+  margin: auto;
+}
+
+.mermaid-zoom-stage img {
+  display: block;
+  max-width: none !important;
+  width: auto;
+  height: auto;
+  margin: auto;
+}
+
+body.mermaid-zoom-open {
+  overflow: hidden;
+}
+
+@media print {
+  .mermaid-zoom-btn,
+  .mermaid-zoom-modal {
+    display: none !important;
+  }
+}

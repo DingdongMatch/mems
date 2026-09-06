@@ -31,6 +31,7 @@ export default withMermaid(defineConfig({
               items: [
                 { text: 'What Is Mems', link: '/introduction/what-is-mems' },
                 { text: 'Design Philosophy', link: '/introduction/design-philosophy' },
+                { text: 'Memory Recall Protocol', link: '/introduction/memory-recall-protocol' },
                 { text: 'Architecture Overview', link: '/introduction/architecture' }
               ]
             },
@@ -62,10 +63,7 @@ export default withMermaid(defineConfig({
             },
             {
               text: 'Development',
-              items: [
-                { text: 'Contributing', link: '/development/contributing' },
-                { text: 'Roadmap', link: '/development/roadmap' }
-              ]
+              items: [{ text: 'Contributing', link: '/development/contributing' }]
             }
           ]
         }
@@ -90,6 +88,7 @@ export default withMermaid(defineConfig({
               items: [
                 { text: '什么是 Mems', link: '/zh/introduction/what-is-mems' },
                 { text: '设计哲学', link: '/zh/introduction/design-philosophy' },
+                { text: '记忆召回协议', link: '/zh/introduction/memory-recall-protocol' },
                 { text: '架构总览', link: '/zh/introduction/architecture' }
               ]
             },
@@ -121,10 +120,7 @@ export default withMermaid(defineConfig({
             },
             {
               text: '开发',
-              items: [
-                { text: '贡献指南', link: '/zh/development/contributing' },
-                { text: '未来规划', link: '/zh/development/roadmap' }
-              ]
+              items: [{ text: '贡献指南', link: '/zh/development/contributing' }]
             }
           ]
         }

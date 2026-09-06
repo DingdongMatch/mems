@@ -6,7 +6,7 @@
 
 > A layered, self-distilling, century-scale memory system for AI agents.
 
-Mems is an industrial-grade memory hub solution for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.
+Mems is an industrial-grade memory infrastructure for AI agents. Through a four-layer hot/cold-decoupled architecture, it provides a memory foundation with personality consistency, low-cost retrieval, and structured evolution.
 
 [中文](README_zh.md)
 
@@ -70,8 +70,7 @@ archive, and re-distill — works and is covered by unit tests, but the project 
   deployments are not fully supported yet
 - benchmark numbers come from our self-designed scenarios, not public benchmarks
 
-Feedback, issues, and contributions are welcome. See
-[Roadmap](docs/src/development/roadmap.md).
+Feedback, issues, and contributions are welcome.
 
 Docs site local dev:
 
