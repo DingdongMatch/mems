@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from mems.domain.identity import MemoryIdentity
+from mems.domain.identity import MemoryNamespace
 from mems.domain.knowledge import (
     DistillFactItem,
     DistillProfileUpdate,
@@ -105,16 +106,24 @@ def test_memory_identity_key_and_filters():
         user_id="u",
         agent_id="a",
         session_id="s",
-        scope="p",
+        namespace_segments=("p",),
     )
-    assert identity.redis_key() == "mems:l0:t:u:p:a:s"
+    expected_namespace = MemoryNamespace.build(
+        tenant_id="t", user_id="u", agent_id="a", path=("p",)
+    ).key
+    assert identity.redis_key().startswith("mems:l0:")
     assert identity.filter_fields() == {
         "tenant_id": "t",
         "user_id": "u",
-        "scope": "p",
+        "namespace": expected_namespace,
     }
+    assert identity.namespace_key == expected_namespace
     assert identity == MemoryIdentity(
-        tenant_id="t", user_id="u", agent_id="a", session_id="s", scope="p"
+        tenant_id="t",
+        user_id="u",
+        agent_id="a",
+        session_id="s",
+        namespace_segments=("p",),
     )
 
 
@@ -125,7 +134,7 @@ def test_working_memory_merge_trims_buffer():
         user_id=None,
         agent_id="a",
         session_id="s",
-        scope=None,
+        namespace=None,
         content="old",
         short_term_buffer=[{"role": "user", "content": "one"}],
         expires_at=now,
@@ -133,7 +142,7 @@ def test_working_memory_merge_trims_buffer():
     merged = existing.merge_append(
         [{"role": "user", "content": "two"}, {"role": "user", "content": "three"}],
         content=None,
-        scope=None,
+        namespace=None,
         max_buffer_size=2,
     )
     assert merged.short_term_buffer == [

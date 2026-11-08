@@ -128,33 +128,6 @@ curl -X POST http://localhost:8210/v1/mems/redistill \
 > A single per-record failure does not turn the request into 500; only an
 > overall run failure does.
 
-## CLI Alternative
-
-```bash
-# Full re-distillation
-uv run python -m mems.redistill
-
-# Filter by agent / time / importance / batch size
-uv run python -m mems.redistill \
-  --agent demo-agent \
-  --start 2026-01-01T00:00:00Z \
-  --end 2026-06-30T23:59:59Z \
-  --min-importance 0.3 \
-  --batch 100
-```
-
-CLI argument mapping:
-
-| CLI | request field |
-| --- | --- |
-| `--agent` | `agent_id` |
-| `--start` | `start_date` |
-| `--end` | `end_date` |
-| `--min-importance` | `min_importance` |
-| `--batch` | `batch_size` |
-
-The CLI prints the same result structure as JSON.
-
 ## Notes
 
 - re-distillation is manual; there is no scheduled job. Run it proactively after

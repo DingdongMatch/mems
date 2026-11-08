@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mems.domain.identity import MemoryIdentity
+from mems.domain.identity import MemoryIdentity, MemoryNamespace
 from mems.domain.outbox import OutboxEvent
 from mems.domain.ports import (
     Clock,
@@ -43,7 +43,11 @@ class VectorSyncApplicationService:
             tenant_id=payload.get("tenant_id"),
             user_id=payload.get("user_id"),
             agent_id=agent_id,
-            scope=payload.get("scope"),
+            memory_namespace=(
+                MemoryNamespace.from_key(payload["namespace"])
+                if payload.get("namespace")
+                else None
+            ),
         )
 
         vectors = await self._embedding.embed([content])

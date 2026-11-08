@@ -19,7 +19,7 @@ def episodic_payload(memory: EpisodicMemory) -> dict[str, Any]:
         "user_id": memory.user_id,
         "agent_id": memory.agent_id,
         "session_id": memory.session_id,
-        "scope": memory.scope,
+        "namespace": memory.namespace,
         "content": memory.content,
     }
 
@@ -29,7 +29,7 @@ def summary_payload(
     tenant_id: str | None,
     user_id: str | None,
     agent_id: str,
-    scope: str | None,
+    namespace: str | None,
     vector_id: str,
     content: str,
 ) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def summary_payload(
         "tenant_id": tenant_id,
         "user_id": user_id,
         "agent_id": agent_id,
-        "scope": scope,
+        "namespace": namespace,
         "memory_type": "l2_summary",
         "vector_id": vector_id,
         "content": content,

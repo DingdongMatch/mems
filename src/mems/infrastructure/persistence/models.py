@@ -52,7 +52,7 @@ class MemsL1Episodic(SQLModel, table=True):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     content: str
     vector_id: str = Field(unique=True)
     importance_score: float = 0.0
@@ -78,7 +78,7 @@ class MemsL2ProfileItem(SQLModel, table=True):
             "tenant_id",
             "user_id",
             "agent_id",
-            "scope",
+            "namespace",
             "category",
             "key",
             "status",
@@ -100,7 +100,7 @@ class MemsL2ProfileItem(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     category: str
     key: str
     value: str
@@ -125,7 +125,7 @@ class MemsL2Fact(SQLModel, table=True):
             "tenant_id",
             "user_id",
             "agent_id",
-            "scope",
+            "namespace",
             "subject",
             "predicate",
             "object",
@@ -136,7 +136,7 @@ class MemsL2Fact(SQLModel, table=True):
             "tenant_id",
             "user_id",
             "agent_id",
-            "scope",
+            "namespace",
             "subject",
             "predicate",
             "status",
@@ -158,7 +158,7 @@ class MemsL2Fact(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     subject: str
     predicate: str
     object: str
@@ -186,7 +186,7 @@ class MemsL2Event(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     subject: str
     action: str
     object: str
@@ -201,7 +201,7 @@ class MemsL2Summary(SQLModel, table=True):
 
     __tablename__ = "mems_l2_summary"
     __table_args__ = (
-        Index("ix_l2_summary_identity", "tenant_id", "user_id", "agent_id", "scope"),
+        Index("ix_l2_summary_identity", "tenant_id", "user_id", "agent_id", "namespace"),
         Index("ix_l2_summary_recall", "agent_id", text("last_verified_at DESC")),
         Index("ix_l2_summary_stale", "last_verified_at"),
     )
@@ -210,7 +210,7 @@ class MemsL2Summary(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     summary_type: str = "long_term"
     content: str
     vector_id: Optional[str] = Field(default=None, unique=True)
@@ -233,7 +233,7 @@ class MemsL2ConflictLog(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     memory_type: str
     old_value: str
     new_value: str
@@ -252,7 +252,7 @@ class MemsL3Archive(SQLModel, table=True):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str = Field(index=True)
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     time_period: str
     summary_text: str
     file_path: str

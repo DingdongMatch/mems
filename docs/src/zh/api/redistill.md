@@ -119,33 +119,6 @@ curl -X POST http://localhost:8210/v1/mems/redistill \
 
 > 单行失败不会导致整个请求 500；只有整体运行失败才返回 500。
 
-## CLI 方式
-
-```bash
-# 全量
-uv run python -m mems.redistill
-
-# 按 agent / 时间 / 重要度 / 批次
-uv run python -m mems.redistill \
-  --agent demo-agent \
-  --start 2026-01-01T00:00:00Z \
-  --end 2026-06-30T23:59:59Z \
-  --min-importance 0.3 \
-  --batch 100
-```
-
-CLI 参数对应关系：
-
-| CLI | 对应请求字段 |
-| --- | --- |
-| `--agent` | `agent_id` |
-| `--start` | `start_date` |
-| `--end` | `end_date` |
-| `--min-importance` | `min_importance` |
-| `--batch` | `batch_size` |
-
-CLI 以 JSON 输出相同的结果结构。
-
 ## 注意
 
 - 再蒸馏是手动动作，没有定时任务；模型升级后建议主动执行一次；

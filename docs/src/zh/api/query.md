@@ -23,10 +23,11 @@
 | `query` | string | 是 | — | 非空且不能为纯空白 | 检索文本，用于语义 / 词法检索 |
 | `tenant_id` | string | 否 | `null` | — | 租户硬边界；给出时按相等过滤 |
 | `user_id` | string | 否 | `null` | — | 用户硬边界；多用户场景必须显式传入 |
-| `scope` | string | 否 | `null` | — | 软可见性标签（如 `private` / `shared` / `team:*`）；给出时按相等过滤 |
+| `namespace` | string[] | 否 | `[]` | 最多 16 段，每段非空且不超过 128 字符 | 通用业务上下文的精确存储分区 |
 | `top_k` | number | 否 | `5` | 1-100 | 本次最多返回的候选条数 |
 
-当前请求**不接受**以下字段（语义见
+`namespace` 必须与写入时的路径一致，只选择一个精确分区，不隐含通配或子路径检索。
+调用方应用应先授权对应业务上下文。当前请求也**不接受**以下字段（语义见
 [记忆召回协议](/zh/introduction/memory-recall-protocol)）：
 
 - `session_id`：写入侧动作溯源，不作为召回过滤/隔离字段；
@@ -43,7 +44,6 @@
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "query": "用户主要用什么语言开发？",
   "top_k": 5
 }
@@ -56,7 +56,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "tenant-001",
     "user_id": "user-001",
     "agent_id": "agent-001",
-    "scope": "private",
     "query": "用户主要用什么语言开发？",
     "top_k": 5
   }'
@@ -77,8 +76,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "source_l1_ids": [102, 231],
       "created_at": "2026-04-01T10:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     },
     {
       "source": "l1_episodic",
@@ -88,8 +86,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "session_id": "session-007",
       "created_at": "2026-03-20T08:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     }
   ],
   "total": 2
@@ -116,7 +113,10 @@ curl -X POST http://localhost:8210/v1/mems/query \
 | `session_id` | string \| null | 来源会话；仅 L0/L1 结果有值 |
 | `tenant_id` | string \| null | 身份上下文 |
 | `user_id` | string \| null | 身份上下文 |
-| `scope` | string \| null | 可见性标签 |
+
+服务端根据经过验证的 identity 和可选 `namespace` 路径段生成不可变
+`MemoryNamespace`。完整内部 namespace 不作为查询参数。调用方应用应在请求前授权 identity
+和业务上下文；Mems 使用它们限定存储查询。
 
 > `id`（稳定记忆标识）与 `confidence`（可信度分项）属于 MRP 目标字段，当前
 > 尚未返回。
@@ -149,8 +149,8 @@ L2：Profile/Fact/Event 走 SQL 候选 + 词法/因子排序；
 - 向量搜索与 L2 SQL 候选都有内部候选上限，最终统一排序后截取 `top_k`；
 - L0 快照按会话保存，查询会看到该 agent 各活跃会话的快照（有词法重叠才会
   返回）；
-- 多用户场景只传 `agent_id` 会放宽隔离（见
-  [Identity Model](/zh/integration/identity-model)）。
+- 多用户场景应传入目标 `user_id`（必要时还有 `tenant_id`）以定位对应身份分区；缺省值
+  指向独立的空值分区，不会作为通配符（见 [Identity Model](/zh/integration/identity-model)）。
 
 ### score 的组成
 

@@ -64,7 +64,7 @@ class VectorService:
             "agent_id",
             "memory_type",
             "session_id",
-            "scope",
+            "namespace",
             "vector_id",
         ]
         for field_name in index_fields:
@@ -78,10 +78,12 @@ class VectorService:
                 )
             except Exception as exc:
                 logger.warning(
-                    "Failed to create payload index %s on %s: %r",
-                    field_name,
-                    collection_name,
-                    exc,
+                    "Failed to create Qdrant payload index",
+                    exc_info=True,
+                    extra={
+                        "event": "vector.payload_index.failed",
+                        "error_type": type(exc).__name__,
+                    },
                 )
 
         self._indexed_collections.add(collection_name)
@@ -166,7 +168,7 @@ class VectorService:
                         tenant_id=summary.tenant_id,
                         user_id=summary.user_id,
                         agent_id=summary.agent_id,
-                        scope=summary.scope,
+                        namespace=summary.namespace,
                         vector_id=summary.vector_id,
                         content=summary.content,
                     ),

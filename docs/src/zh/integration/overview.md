@@ -106,27 +106,30 @@ Agent Runtime
 
 ## 3. 接入前的身份设计
 
-所有业务字段都是**平级字符串**，通过请求传入：
+请求通过**平级字符串字段**传入 identity：
 
 ```text
-tenant_id / user_id / agent_id：硬隔离边界（agent_id 必填）
-scope：软可见性标签（可空）
-session_id：写入侧动作溯源（可空，不作为隔离）
+tenant_id / user_id / agent_id：身份边界（agent_id 必填）
+session_id：写入侧动作溯源（可空，不作为长期边界）
 ```
+
+API 接受可选的通用 `namespace` 路径（`string[]`）表达业务上下文，例如
+`["projects", "prj_abc123"]`。Mems 将它与经过验证的 identity 组合，生成带版本的
+不可变内部 `MemoryNamespace`。调用方应用负责授权
+identity 与业务上下文；Mems 将它们一致地用于存储查询。路径只选择存储分区，不授予权限。
 
 推荐用法：
 
 | 场景 | 推荐身份 |
 | --- | --- |
-| 单用户 Agent | `tenant_id` 可留空，固定一个 `user_id`，`scope="private"` |
+| 单用户 Agent | 固定一个 `user_id`；无需租户边界时可不传 `tenant_id` |
 | 多用户 SaaS | 每次请求显式传 `tenant_id` + `user_id`，不要只靠 `agent_id` |
 | 多 Agent 系统 | 不同 Agent 使用不同 `agent_id`，user 维度仍按需传入 |
-| 有共享/团队空间 | 用 `scope` 表达 `private`、`shared`、`team:*` |
+| 有共享/团队空间 | 由调用方应用授权共享所有者，并使用该所有者对应的 identity |
 
-重要实现语义：当前过滤是「给出即相等过滤、省略即不按该维度收窄」。也就是说，
-一个只带 `agent_id` 的 Query 会看到该 agent 下所有 tenant/user/scope 的记忆；
-多用户场景必须把 `user_id`（必要时还有 `tenant_id`）传给 write 与 query 两端，
-且两侧保持一致，否则会写入与召回范围不一致。
+完整 `MemoryNamespace` 包含所有 identity 维度；可选 identity 缺省时进入独立的空值分区，
+不会扩大为通配查询。多用户场景应从可信上下文传入目标 `user_id` 和适用的 `tenant_id`，
+并在 write 与 query 两侧使用相同 identity。
 
 `session_id` 只用于回答「这条记忆来自哪次会话」。query 请求不接受
 `session_id`；L0/L1 的结果项会携带它，L2 知识通过 `source_l1_ids` 回溯原文。
@@ -143,7 +146,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-42",
     "agent_id": "demo-agent",
     "session_id": "session-001",
-    "scope": "private",
     "content": "用户喜欢 Rust，并且偏好简洁的回答。",
     "messages": [
       {"role": "user", "content": "记住我喜欢 Rust。"},
@@ -163,7 +165,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
   "user_id": "user-42",
   "agent_id": "demo-agent",
   "session_id": "session-001",
-  "scope": "private",
   "importance_score": 0.8,
   "content": "用户喜欢 Rust，并且偏好简洁的回答。",
   "messages": [
@@ -193,7 +194,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "acme",
     "user_id": "user-42",
     "agent_id": "demo-agent",
-    "scope": "private",
     "query": "用户喜欢什么语言？",
     "top_k": 5
   }'
@@ -213,8 +213,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "session_id": "session-001",
       "created_at": "2026-09-06T01:00:00Z",
       "tenant_id": "acme",
-      "user_id": "user-42",
-      "scope": "private"
+      "user_id": "user-42"
     },
     {
       "source": "l0_hot",
@@ -223,8 +222,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "source_l1_ids": [],
       "session_id": "session-001",
       "tenant_id": "acme",
-      "user_id": "user-42",
-      "scope": "private"
+      "user_id": "user-42"
     }
   ],
   "total": 2
@@ -247,8 +245,7 @@ BASE = "http://localhost:8210"
 IDENTITY = {
     "tenant_id": "acme",
     "user_id": "user-42",
-    "agent_id": "demo-agent",
-    "scope": "private",
+    "agent_id": "demo-agent"
 }
 
 def remember(content: str, importance: float = 0.5) -> dict:
@@ -379,14 +376,18 @@ GET /v1/mems/status → 数据库/Redis/Qdrant/调度器健康 + 流水线指标
 | --- | --- |
 | write 成功但 query 没有新内容 | Outbox worker 未消费向量同步；检查 `OUTBOX_WORKER_ENABLED` 与 `pending_distill`/status |
 | L2 一直不产生 | LLM 未配置或 `OPENAI_API_KEY` 无效；待蒸馏未达阈值 |
-| 跨用户看到记忆 | 请求漏传 `user_id/tenant_id`（过滤语义见第 3 节） |
+| 跨用户看到记忆 | 写入时使用了相同 identity，或调用方传入了错误 identity/namespace |
 | 查不到刚写入的内容 | L0 快照 TTL 过期或词法无重叠；L1 向量副本同步滞后 |
 | redistill 结果不符预期 | 已用当前模型处理过（去重跳过）；查看 `mems_redistill_progress` |
 
 ### 8.3 日志
 
-应用日志输出在 `src/mems/` 各模块中：Outbox 重试、向量同步失败、蒸馏失败、
-再蒸馏跳过均有 `logger.warning/error` 记录，按 `LOG_LEVEL` 控制。
+应用、API 与 worker 统一输出 JSON 日志，`LOG_LEVEL` 控制级别。API 请求会生成
+`request_id` 并放入响应头 `X-Request-ID`；后台任务日志包含 Outbox 事件 ID、类型、
+结果与耗时。日志不记录记忆原文、prompt、密钥或异常消息正文。
+
+应用日志不记录 LLM 输入、记忆原文、API 密钥或异常消息正文。蒸馏链路直接使用
+OpenAI SDK，不配置外部 LLM 观测服务。
 
 ## 9. 接入检查清单
 
@@ -395,8 +396,10 @@ GET /v1/mems/status → 数据库/Redis/Qdrant/调度器健康 + 流水线指标
 - [ ] `.env` 中数据库/Redis/Qdrant 指向正确，`uv run python -m mems.main` 正常启动；
 - [ ] 需要蒸馏时已配置 `OPENAI_*`（`/status` 不检查 LLM；可用一次真实写入后
       观察是否产生 L2 来验证）；
-- [ ] write 与 query 两端使用同一套 `tenant_id/user_id/agent_id/scope`；
+- [ ] write 与 query 两端使用同一套 `tenant_id/user_id/agent_id` identity；
 - [ ] 多用户场景每条请求都显式传 `user_id`，未依赖 `agent_id` 隔离；
+- [ ] 请求到达 Mems 前已完成调用方授权；namespace 路径段来自可信业务上下文，
+      且 write 与 query 保持一致；
 - [ ] 理解 `content`/`messages` 的区别并选择适合的写入方式；
 - [ ] 消费 query 结果时处理了 `source_l1_ids`、`created_at` 与 `session_id`
       的可空语义；

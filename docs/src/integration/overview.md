@@ -110,29 +110,34 @@ Recall first or remember first — Mems does not prescribe an order.
 
 ## 3. Identity Design Before Integration
 
-All business fields are **flat strings** passed with each request:
+Requests carry identity as **flat string fields**:
 
 ```text
-tenant_id / user_id / agent_id: hard isolation boundaries (agent_id required)
-scope: soft visibility label (nullable)
-session_id: write-side action provenance (nullable, not isolation)
+tenant_id / user_id / agent_id: identity boundaries (agent_id required)
+session_id: write-side action provenance (nullable, not a long-term boundary)
 ```
+
+The API accepts an optional generic `namespace` path (`string[]`) for
+business context, such as `["projects", "prj_abc123"]`. Mems combines it with
+validated identity to derive an immutable, versioned internal
+`MemoryNamespace`. The
+caller application authorizes both identity and business context; Mems applies
+them consistently to storage queries. The path selects a partition and grants
+no permissions.
 
 Recommended usage:
 
 | Scenario | Recommended identity |
 | --- | --- |
-| Single-user agent | leave `tenant_id` empty, use one fixed `user_id`, `scope="private"` |
+| Single-user agent | use one fixed `user_id`; leave `tenant_id` empty when no tenant boundary is needed |
 | Multi-user SaaS | pass `tenant_id` + `user_id` explicitly on every request; do not rely on `agent_id` alone |
 | Multi-agent system | use a different `agent_id` per agent; still pass the user dimension as needed |
-| Shared / team spaces | express `private`, `shared`, `team:*` with `scope` |
+| Shared / team spaces | authorize the shared owner in the caller application and use its identity |
 
-Important implementation semantics: filtering is "equality when provided,
-omitted means no narrowing along that dimension". A query carrying only
-`agent_id` therefore sees every tenant/user/scope memory under that agent. In
-multi-user scenarios you must pass `user_id` (and `tenant_id` when needed) to
-both `write` and `query`, keeping both sides consistent — otherwise writes and
-recalls can cover different ranges.
+The canonical namespace includes optional identity values. Omitting one selects
+its dedicated null partition; it does not wildcard across values. In
+multi-user scenarios, derive `tenant_id` and `user_id` from trusted caller
+context and use the same identity for `write` and `query`.
 
 `session_id` only answers "which session did this memory come from". Query
 requests do not accept `session_id`; L0/L1 result items may carry it, and L2
@@ -150,7 +155,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-42",
     "agent_id": "demo-agent",
     "session_id": "session-001",
-    "scope": "private",
     "content": "The user likes Rust and prefers concise answers.",
     "messages": [
       {"role": "user", "content": "Remember that I like Rust."},
@@ -170,7 +174,6 @@ Example success response:
   "user_id": "user-42",
   "agent_id": "demo-agent",
   "session_id": "session-001",
-  "scope": "private",
   "importance_score": 0.8,
   "content": "The user likes Rust and prefers concise answers.",
   "messages": [
@@ -201,7 +204,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "acme",
     "user_id": "user-42",
     "agent_id": "demo-agent",
-    "scope": "private",
     "query": "What language does the user like?",
     "top_k": 5
   }'
@@ -221,8 +223,7 @@ Example success response:
       "session_id": "session-001",
       "created_at": "2026-09-06T01:00:00Z",
       "tenant_id": "acme",
-      "user_id": "user-42",
-      "scope": "private"
+      "user_id": "user-42"
     },
     {
       "source": "l0_hot",
@@ -231,8 +232,7 @@ Example success response:
       "source_l1_ids": [],
       "session_id": "session-001",
       "tenant_id": "acme",
-      "user_id": "user-42",
-      "scope": "private"
+      "user_id": "user-42"
     }
   ],
   "total": 2
@@ -256,8 +256,7 @@ BASE = "http://localhost:8210"
 IDENTITY = {
     "tenant_id": "acme",
     "user_id": "user-42",
-    "agent_id": "demo-agent",
-    "scope": "private",
+    "agent_id": "demo-agent"
 }
 
 def remember(content: str, importance: float = 0.5) -> dict:
@@ -398,15 +397,20 @@ Container and load-balancer recommendations:
 | --- | --- |
 | write succeeds but query returns nothing new | outbox worker is not consuming vector sync; check `OUTBOX_WORKER_ENABLED` and `pending_distill` / status |
 | L2 never appears | LLM not configured or `OPENAI_API_KEY` invalid; pending records below the distill threshold |
-| users see each other's memories | request omitted `user_id`/`tenant_id` (filtering semantics in section 3) |
+| users see each other's memories | writes were stored under the same identity or the caller supplied the wrong identity/namespace |
 | freshly written content is not found | L0 snapshot TTL expired or no lexical overlap; L1 vector replica lagging |
 | redistill result is unexpected | already processed with the current model (deduplicated skip); inspect `mems_redistill_progress` |
 
 ### 8.3 Logs
 
-Application logs live in the `src/mems/` modules: outbox retries, vector-sync
-failures, distillation failures, and re-distillation skips all use
-`logger.warning/error`, controlled by `LOG_LEVEL`.
+The API, application, and worker emit JSON logs. `LOG_LEVEL` controls the level.
+API requests get a generated `request_id`, also returned in `X-Request-ID`;
+background job logs include the Outbox event ID, type, result, and duration.
+Logs omit raw memories, prompts, API keys, and exception message text.
+
+LLM inputs, memory text, API keys, and exception message text are not included in
+application logs. The distillation path uses the OpenAI SDK directly; no external
+LLM tracing service is configured.
 
 ## 9. Pre-Launch Checklist
 
@@ -416,9 +420,12 @@ Confirm each item before going live:
       `uv run python -m mems.main` starts normally;
 - [ ] `OPENAI_*` is configured when distillation is needed (`/status` does not
       check the LLM; verify with a real write and observe whether L2 appears);
-- [ ] `write` and `query` use the same `tenant_id/user_id/agent_id/scope`;
+- [ ] `write` and `query` use the same `tenant_id/user_id/agent_id` identity;
 - [ ] multi-user scenarios pass `user_id` explicitly on every request and do not
       rely on `agent_id` isolation;
+- [ ] caller authorization is complete before requests reach Mems; planned
+      namespace segments come from trusted business context and are consistent
+      between write and query;
 - [ ] you understand the `content`/`messages` difference and chose a fitting
       write style;
 - [ ] query-result consumers handle nullable `source_l1_ids`, `created_at`, and

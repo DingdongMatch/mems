@@ -18,7 +18,7 @@ class WriteMemoryCommand(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: List[str] = Field(default_factory=list)
     content: Optional[str] = None
     messages: List[Dict[str, str]] = Field(default_factory=list)
     ttl_seconds: int = 1800
@@ -31,7 +31,7 @@ class WriteMemoryResult(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: List[str] = Field(default_factory=list)
     importance_score: float = 0.5
     content: str
     messages: List[Dict[str, str]] = Field(default_factory=list)
@@ -45,7 +45,7 @@ class QueryMemoryCommand(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: List[str] = Field(default_factory=list)
     query: str
     top_k: int = 5
 
@@ -124,7 +124,6 @@ class QueryResultItem(BaseModel):
     session_id: Optional[str] = None
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
-    scope: Optional[str] = None
 
 
 class MemsQueryResponse(BaseModel):
@@ -139,7 +138,7 @@ class MemsWriteResponse(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: List[str] = Field(default_factory=list)
     importance_score: float = 0.5
     content: str
     messages: List[Dict[str, str]] = Field(default_factory=list)

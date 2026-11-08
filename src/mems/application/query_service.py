@@ -64,7 +64,7 @@ class QueryMemoryService:
             tenant_id=command.tenant_id,
             user_id=command.user_id,
             agent_id=command.agent_id,
-            scope=command.scope,
+            namespace_segments=tuple(command.namespace),
         )
         query_intents = detect_query_intents(command.query)
         now = self._clock.now()
@@ -82,7 +82,14 @@ class QueryMemoryService:
             )
         except Exception as exc:
             logger.warning(
-                f"Vector search unavailable for agent {command.agent_id}: {exc}"
+                "Vector search unavailable; continuing with non-vector sources",
+                exc_info=True,
+                extra={
+                    "event": "memory.vector_search.failed",
+                    "operation": "memory_query",
+                    "error_type": type(exc).__name__,
+                    "result": "degraded",
+                },
             )
             vector_results = []
 

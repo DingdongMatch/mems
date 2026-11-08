@@ -53,7 +53,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-42",
     "agent_id": "demo-agent",
     "session_id": "demo-session",
-    "scope": "private",
     "messages": [
       {"role": "user", "content": "Remember that I like Rust"},
       {"role": "assistant", "content": "Got it."}
@@ -70,7 +69,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "acme",
     "user_id": "user-42",
     "agent_id": "demo-agent",
-    "scope": "private",
     "query": "What do I like?"
   }'
 ```

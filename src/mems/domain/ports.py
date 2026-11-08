@@ -32,7 +32,7 @@ class WorkingMemoryStore(Protocol):
         session_id: Optional[str],
         messages: list[dict[str, str]],
         content: Optional[str] = None,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
         ttl_seconds: int = 1800,
         event_type: str = "write",
     ) -> WorkingMemory: ...
@@ -43,7 +43,7 @@ class WorkingMemoryStore(Protocol):
         session_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> Optional[WorkingMemory]: ...
 
     async def list_active(
@@ -51,7 +51,7 @@ class WorkingMemoryStore(Protocol):
         agent_id: str,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
         limit: int = 10,
     ) -> list[WorkingMemory]: ...
 
@@ -61,7 +61,7 @@ class WorkingMemoryStore(Protocol):
         session_id: Optional[str] = None,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> bool: ...
 
     async def append_messages(
@@ -74,7 +74,7 @@ class WorkingMemoryStore(Protocol):
         content: Optional[str] = None,
         ttl_seconds: int = 1800,
         max_buffer_size: int = 10,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> WorkingMemory: ...
 
     async def ping(self) -> None: ...
@@ -107,7 +107,7 @@ class EpisodicRepository(Protocol):
         agent_id: str,
         tenant_id: Optional[str],
         user_id: Optional[str],
-        scope: Optional[str],
+        namespace: Optional[str],
         cutoff: datetime,
     ) -> list[EpisodicMemory]: ...
 

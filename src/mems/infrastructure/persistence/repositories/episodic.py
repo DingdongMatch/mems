@@ -87,7 +87,7 @@ class SqlEpisodicRepository(SqlRepository):
         agent_id: str,
         tenant_id: Optional[str],
         user_id: Optional[str],
-        scope: Optional[str],
+        namespace: Optional[str],
         cutoff: datetime,
     ) -> list[EpisodicMemory]:
         query = select(orm.MemsL1Episodic).where(
@@ -99,8 +99,8 @@ class SqlEpisodicRepository(SqlRepository):
             query = query.where(orm.MemsL1Episodic.tenant_id == tenant_id)
         if user_id is not None:
             query = query.where(orm.MemsL1Episodic.user_id == user_id)
-        if scope is not None:
-            query = query.where(orm.MemsL1Episodic.scope == scope)
+        if namespace is not None:
+            query = query.where(orm.MemsL1Episodic.namespace == namespace)
         rows = self._session.exec(query).all()
         return [episodic_from_orm(row) for row in rows]
 
@@ -112,7 +112,7 @@ class SqlEpisodicRepository(SqlRepository):
                 orm.MemsL1Episodic.tenant_id,
                 orm.MemsL1Episodic.user_id,
                 orm.MemsL1Episodic.agent_id,
-                orm.MemsL1Episodic.scope,
+                orm.MemsL1Episodic.namespace,
             )
             .where(
                 orm.MemsL1Episodic.created_at < cutoff,

@@ -61,7 +61,7 @@ class L0HotRetriever:
             ctx.identity.agent_id,
             tenant_id=ctx.identity.tenant_id,
             user_id=ctx.identity.user_id,
-            scope=ctx.identity.scope,
+            namespace=ctx.identity.namespace_key,
             limit=self._limit,
         )
         results: list[ScoredMemory] = []
@@ -78,7 +78,6 @@ class L0HotRetriever:
                         session_id=l0.session_id,
                         tenant_id=l0.tenant_id,
                         user_id=l0.user_id,
-                        scope=l0.scope,
                     )
                 )
         return results
@@ -140,7 +139,6 @@ class L1EpisodicRetriever:
                     created_at=record.created_at,
                     tenant_id=record.tenant_id,
                     user_id=record.user_id,
-                    scope=record.scope,
                 )
             )
         return results
@@ -174,7 +172,6 @@ class L2ProfileRetriever:
                     created_at=profile.last_verified_at,
                     tenant_id=profile.tenant_id,
                     user_id=profile.user_id,
-                    scope=profile.scope,
                 )
             )
         return results
@@ -208,7 +205,6 @@ class L2FactRetriever:
                     created_at=fact.last_verified_at,
                     tenant_id=fact.tenant_id,
                     user_id=fact.user_id,
-                    scope=fact.scope,
                 )
             )
         return results
@@ -242,7 +238,6 @@ class L2EventRetriever:
                     created_at=event.created_at,
                     tenant_id=event.tenant_id,
                     user_id=event.user_id,
-                    scope=event.scope,
                 )
             )
         return results
@@ -279,7 +274,6 @@ class L2SummaryRetriever:
                     created_at=summary.created_at,
                     tenant_id=summary.tenant_id,
                     user_id=summary.user_id,
-                    scope=summary.scope,
                 )
             )
         return results

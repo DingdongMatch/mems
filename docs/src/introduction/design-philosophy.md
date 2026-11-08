@@ -6,7 +6,7 @@ Hot cache, raw events, stable knowledge, and cold archives are different kinds o
 
 ## Decentralized Schema
 
-Mems does not assume one fixed upstream identity model. `tenant_id`, `user_id`, and `agent_id` form hard boundaries, `session_id` is optional provenance, and `scope` is a soft visibility tag defined by the caller — the same model covers single-user, multi-user, and multi-agent scenarios.
+Mems does not assume one fixed upstream identity model. Requests carry `tenant_id`, `user_id`, and `agent_id`; `session_id` is optional provenance. The API accepts an optional generic `namespace` path for caller business context; Mems combines it with validated identity into an immutable `MemoryNamespace`. The caller application defines business authorization and supplies authorized identity and namespace context.
 
 ## SQL-First Online Truth
 

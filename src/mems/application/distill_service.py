@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any, Dict
 from uuid import uuid4
 
@@ -75,9 +76,7 @@ class DistillApplicationService:
 
         return json.loads(response)
 
-    async def _request_llm_json(
-        self, messages: list[Dict[str, str]]
-    ) -> Dict[str, Any]:
+    async def _request_llm_json(self, messages: list[Dict[str, str]]) -> Dict[str, Any]:
         last_exc: Exception | None = None
         for json_mode in (True, False):
             try:
@@ -88,7 +87,14 @@ class DistillApplicationService:
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
-                    "LLM JSON attempt failed (json_mode=%s): %s", json_mode, exc
+                    "LLM JSON attempt failed",
+                    exc_info=True,
+                    extra={
+                        "event": "distill.llm_json_attempt.failed",
+                        "operation": "distill_llm_call",
+                        "result": "retrying",
+                        "error_type": type(exc).__name__,
+                    },
                 )
         raise RuntimeError(f"LLM JSON extraction failed: {last_exc}") from last_exc
 
@@ -134,7 +140,7 @@ class DistillApplicationService:
             tenant_id=source.tenant_id,
             user_id=source.user_id,
             agent_id=source.agent_id,
-            scope=source.scope,
+            namespace=source.namespace,
             summary_type="long_term",
             content=summary,
             vector_id=vector_id,
@@ -154,7 +160,7 @@ class DistillApplicationService:
                     "agent_id": source.agent_id,
                     "tenant_id": source.tenant_id,
                     "user_id": source.user_id,
-                    "scope": source.scope,
+                    "namespace": source.namespace,
                 },
             )
         )
@@ -226,10 +232,20 @@ class DistillApplicationService:
             if memory.id is None:
                 continue
             source = DistillSource.from_episodic(memory)
+            started = perf_counter()
             try:
                 local_created, local_updated = await self.process_source(source)
             except Exception as exc:
-                logger.error(f"LLM Error for L1 id={memory.id}: {exc}")
+                logger.error(
+                    "Memory distillation failed",
+                    exc_info=True,
+                    extra={
+                        "event": "distill.source.failed",
+                        "source_l1_id": memory.id,
+                        "error_type": type(exc).__name__,
+                        "result": "failed",
+                    },
+                )
                 continue
 
             memory.mark_distilled()
@@ -237,6 +253,17 @@ class DistillApplicationService:
             created_count += local_created
             updated_count += local_updated
             distilled_count += 1
+            logger.info(
+                "Memory distillation completed",
+                extra={
+                    "event": "distill.source.completed",
+                    "source_l1_id": memory.id,
+                    "duration_ms": round((perf_counter() - started) * 1000, 2),
+                    "l2_created": local_created,
+                    "l2_updated": local_updated,
+                    "result": "success",
+                },
+            )
 
         self._uow.commit()
         return DistillResponse(

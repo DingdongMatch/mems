@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+from mems.domain.identity import MemoryNamespace
 from mems.infrastructure.persistence.models import (
     MemsL1Episodic,
     MemsL2ConflictLog,
@@ -352,9 +353,9 @@ def test_context_endpoint_is_not_exposed(test_app):
 
 
 def test_identity_fields_isolate_multi_user_memory(test_app):
-    """Verify tenant, user, and scope isolate memory visibility.
+    """Verify tenant, user, and namespace isolate memory visibility.
 
-    验证 tenant、user 与 scope 字段能够隔离记忆可见性。
+    验证 tenant、user 与 namespace 字段能够隔离记忆可见性。
     """
     app, engine, redis_service, _ = test_app
 
@@ -366,7 +367,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
                 "user_id": "user_a",
                 "agent_id": "support_agent",
                 "session_id": "session_shared",
-                "scope": "private",
+                "namespace": ["projects", "prj_test"],
                 "messages": [
                     {"role": "user", "content": "Remember I like Python."},
                     {"role": "assistant", "content": "Got it for user A."},
@@ -380,7 +381,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
                 "user_id": "user_b",
                 "agent_id": "support_agent",
                 "session_id": "session_shared",
-                "scope": "private",
+                "namespace": ["projects", "prj_test"],
                 "messages": [
                     {"role": "user", "content": "Remember I like Rust."},
                     {"role": "assistant", "content": "Got it for user B."},
@@ -396,7 +397,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
                 "tenant_id": "tenant_1",
                 "user_id": "user_a",
                 "agent_id": "support_agent",
-                "scope": "private",
+                "namespace": ["projects", "prj_test"],
                 "query": "Python",
                 "top_k": 5,
             },
@@ -407,7 +408,7 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
                 "tenant_id": "tenant_1",
                 "user_id": "user_b",
                 "agent_id": "support_agent",
-                "scope": "private",
+                "namespace": ["projects", "prj_test"],
                 "query": "Rust",
                 "top_k": 5,
             },
@@ -427,17 +428,47 @@ def test_identity_fields_isolate_multi_user_memory(test_app):
         ).all()
         assert len(records) == 2
         assert {record.user_id for record in records} == {"user_a", "user_b"}
-        assert {record.scope for record in records} == {"private"}
+        assert {record.namespace for record in records} == {
+            MemoryNamespace.build(
+                tenant_id="tenant_1",
+                user_id=user_id,
+                agent_id="support_agent",
+                path=("projects", "prj_test"),
+            ).key
+            for user_id in ("user_a", "user_b")
+        }
 
     assert (
         redis_service._store.get(
-            ("tenant_1", "user_a", "private", "support_agent", "session_shared")
+            (
+                "tenant_1",
+                "user_a",
+                MemoryNamespace.build(
+                    tenant_id="tenant_1",
+                    user_id="user_a",
+                    agent_id="support_agent",
+                    path=("projects", "prj_test"),
+                ).key,
+                "support_agent",
+                "session_shared",
+            )
         )
         is not None
     )
     assert (
         redis_service._store.get(
-            ("tenant_1", "user_b", "private", "support_agent", "session_shared")
+            (
+                "tenant_1",
+                "user_b",
+                MemoryNamespace.build(
+                    tenant_id="tenant_1",
+                    user_id="user_b",
+                    agent_id="support_agent",
+                    path=("projects", "prj_test"),
+                ).key,
+                "support_agent",
+                "session_shared",
+            )
         )
         is not None
     )

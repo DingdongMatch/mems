@@ -27,7 +27,7 @@ features:
   - title: "L3 → L2 Re-Distillation"
     details: "The archive is not a dead end. Upgrade your model, re-distill archived memories, and evolve L2 knowledge losslessly through the version chain — the system grows with each model generation."
   - title: "Production Isolation"
-    details: "Built-in hard boundaries for tenant, user, and agent, plus session and scope tags, fit multi-tenant SaaS and enterprise deployments."
+    details: "Server-generated memory namespaces keep tenant, user, and agent partitions consistent across storage adapters; the caller application controls business authorization."
   - title: "Atomic Integration"
     details: "Third-party agents plug in with just Remember and Recall — no storage plumbing to manage."
 ---

@@ -74,8 +74,8 @@ flowchart TB
 - **归档（L1 → L3）**：APScheduler 每日 03:00 为早于 `ARCHIVE_DAYS` 的记录身份
   enqueue `archive_agent` 事件；Outbox worker 随后原子写入 JSONL 批次、登记
   元数据，并标记 L1 已归档。
-- **再蒸馏（L3 → L2，手动）**：`POST /v1/mems/redistill` 或
-  `python -m mems.redistill` 用当前 `OPENAI_MODEL` 重蒸归档 JSONL，通过版本链
+- **再蒸馏（L3 → L2，手动）**：`POST /v1/mems/redistill` 用当前
+  `OPENAI_MODEL` 重蒸归档 JSONL，通过版本链
   升级 L2；同一模型已处理的记录按内容指纹跳过，模型升级后旧数据自动进入待重蒸队列。
 - **L0 输出管道**（默认关闭）：消费者用 `XREAD` / `XREADGROUP` 配合自己的代码
   消费事件；发布为尽力而为，绝不阻断 `/write`。详见
@@ -93,8 +93,10 @@ flowchart TB
 - **基础设施层**：Redis/Qdrant/embedding/LLM 适配器、SQLModel 持久化、仓储，
   以及事务性 Outbox 的 `OutboxWorker`，负责 claim 事件、分发处理并按指数退避
   重试。可在进程内运行，也可通过 `python -m mems.worker` 独立部署。
-- **隔离模型**：硬边界 `tenant_id` / `user_id` / `agent_id`；软标签 `scope`；
-  `session_id` 为可选溯源。多用户隔离不能只依赖 `agent_id`。
+- **Identity 与 namespace**：`tenant_id` / `user_id` / `agent_id` 确定记忆边界，
+  `session_id` 为可选溯源。API 支持可选通用 `namespace` 路径表达调用方上下文；
+  Mems 将它与经过验证的 identity 组合生成不可变 `MemoryNamespace`。
+  业务授权由调用方应用负责，多用户隔离不能只依赖 `agent_id`。
 - **失败容忍**：向量副本同步与流发布均为尽力而为；蒸馏、归档在后台执行，
   由 Outbox worker 通过状态列（`vector_status`、`archive_status`、
   `is_distilled`、`is_archived`）与重试/退避语义保证最终一致。
@@ -117,7 +119,7 @@ flowchart LR
     L2[(L2 画像/事实/事件/摘要 + 冲突日志)]
     ARCHIVE["Archive 处理器（每日 03:00）"]
     L3[["L3 JSONL 归档"]]
-    RD["再蒸馏 API / CLI"]
+    RD["再蒸馏 API"]
     STREAM[("Redis Stream（默认关闭）")]
 
     CALLER --> WAPI

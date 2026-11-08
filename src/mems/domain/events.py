@@ -28,7 +28,7 @@ class MemoryPipelineEvent(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     content: Optional[str] = None
     messages: str = Field(default="[]")
     expires_at: Optional[datetime] = None

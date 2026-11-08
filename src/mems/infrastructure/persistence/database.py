@@ -12,7 +12,8 @@ from mems.config import settings
 
 engine = create_engine(
     settings.DATABASE_URL,
-    echo=settings.LOG_LEVEL == "DEBUG",
+    # SQL echo can write memory contents from bound parameters to logs.
+    echo=False,
     pool_pre_ping=True,
 )
 

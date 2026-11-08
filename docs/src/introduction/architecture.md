@@ -81,8 +81,8 @@ flowchart TB
 - **Archive** (`L1 → L3`): the APScheduler job at 03:00 enqueues `archive_agent`
   events for identities with records older than `ARCHIVE_DAYS`; the outbox worker
   then writes an atomic JSONL batch, records metadata, and marks L1 archived.
-- **Re-distill** (`L3 → L2`, manual): `POST /v1/mems/redistill` or
-  `python -m mems.redistill` re-distills archived JSONL with the current
+- **Re-distill** (`L3 → L2`, manual): `POST /v1/mems/redistill` re-distills
+  archived JSONL with the current
   `OPENAI_MODEL`, upgrading L2 via the version chain. Records already processed
   with the same model are skipped (content fingerprint + model), so a model
   upgrade automatically queues old data for re-distillation.
@@ -104,9 +104,12 @@ flowchart TB
   repositories, and a transactional-outbox `OutboxWorker` that claims events,
   dispatches them, and retries with exponential backoff. Run it in-process or as
   a separate process with `python -m mems.worker`.
-- **Isolation**: hard boundaries `tenant_id` / `user_id` / `agent_id`; soft tag
-  `scope`; `session_id` is optional provenance. Do not rely on `agent_id` alone
-  for multi-user isolation.
+- **Identity and namespace**: `tenant_id` / `user_id` / `agent_id` identify the
+  memory boundary; `session_id` is optional provenance. The API accepts an
+  optional generic `namespace` path for caller context; Mems combines it with
+  validated identity into an immutable `MemoryNamespace`. The caller
+  application owns business authorization; do not
+  rely on `agent_id` alone for multi-user isolation.
 - **Failure tolerance**: vector replica sync and stream publication are
   best-effort; distillation and archive run through the outbox worker with status
   columns (`vector_status`, `archive_status`, `is_distilled`, `is_archived`) and

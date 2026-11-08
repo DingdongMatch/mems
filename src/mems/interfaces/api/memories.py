@@ -40,10 +40,13 @@ WRITE_MEMORY_EXAMPLE = {
         "user_id": "user_alice",
         "agent_id": "support_agent",
         "session_id": "session_20260401_001",
-        "scope": "private",
+        "namespace": ["projects", "prj_demo"],
         "content": "The user likes Rust and concise answers.",
         "messages": [
-            {"role": "user", "content": "Remember that I like Rust and concise answers."},
+            {
+                "role": "user",
+                "content": "Remember that I like Rust and concise answers.",
+            },
             {"role": "assistant", "content": "Stored. I will keep replies concise."},
         ],
         "ttl_seconds": 1800,
@@ -57,7 +60,7 @@ SEARCH_MEMORY_EXAMPLE = {
         "tenant_id": "tenant_demo",
         "user_id": "user_alice",
         "agent_id": "support_agent",
-        "scope": "private",
+        "namespace": ["projects", "prj_demo"],
         "query": "What programming language does the user prefer?",
         "top_k": 5,
     },
@@ -72,12 +75,18 @@ WRITE_MEMORY_RESPONSE_EXAMPLE = {
                 "user_id": "user_alice",
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
-                "scope": "private",
+                "namespace": ["projects", "prj_demo"],
                 "importance_score": 0.5,
                 "content": "The user likes Rust and concise answers.",
                 "messages": [
-                    {"role": "user", "content": "Remember that I like Rust and concise answers."},
-                    {"role": "assistant", "content": "Stored. I will keep replies concise."},
+                    {
+                        "role": "user",
+                        "content": "Remember that I like Rust and concise answers.",
+                    },
+                    {
+                        "role": "assistant",
+                        "content": "Stored. I will keep replies concise.",
+                    },
                 ],
                 "appended_count": 2,
                 "persisted_to_l1": True,
@@ -133,7 +142,6 @@ SEARCH_MEMORY_RESPONSE_EXAMPLE = {
                         "created_at": "2026-04-01T10:00:00Z",
                         "tenant_id": "tenant_demo",
                         "user_id": "user_alice",
-                        "scope": "private",
                     },
                     {
                         "source": "l1_episodic",
@@ -144,7 +152,6 @@ SEARCH_MEMORY_RESPONSE_EXAMPLE = {
                         "created_at": "2026-04-01T10:00:00Z",
                         "tenant_id": "tenant_demo",
                         "user_id": "user_alice",
-                        "scope": "private",
                     },
                 ],
                 "total": 2,
@@ -162,7 +169,7 @@ TURN_WRITE_RESPONSE_EXAMPLE = {
                 "user_id": "user_alice",
                 "agent_id": "support_agent",
                 "session_id": "session_20260401_001",
-                "scope": "private",
+                "namespace": ["projects", "prj_demo"],
                 "importance_score": 0.5,
                 "content": "user: Please answer in Chinese.\nassistant: 好的，我会继续使用中文回答。",
                 "messages": [
@@ -187,7 +194,7 @@ def _to_write_command(request: MemsWriteRequest):
         user_id=request.user_id,
         agent_id=request.agent_id,
         session_id=request.session_id,
-        scope=request.scope,
+        namespace=request.namespace,
         content=request.content,
         messages=[message.model_dump() for message in request.messages],
         ttl_seconds=request.ttl_seconds,
@@ -202,7 +209,7 @@ def _to_query_command(request: MemsQueryRequest):
         tenant_id=request.tenant_id,
         user_id=request.user_id,
         agent_id=request.agent_id,
-        scope=request.scope,
+        namespace=request.namespace,
         query=request.query,
         top_k=request.top_k,
     )
@@ -214,10 +221,16 @@ def _to_query_command(request: MemsQueryRequest):
     summary="Remember memory / 写入记忆",
     description=(
         "Remember memory content into L0 hot memory and persist the primary SQL record into L1. "
+        "Optional namespace path segments select an exact partition; authorize the business context before sending them. "
         "Mems stores memories and leaves runtime state to the caller.\n\n"
-        "把记忆内容写入 L0 热记忆，并持久化主 L1 SQL 记录。Mems 只处理记忆，运行时状态由调用方管理。"
+        "可选 namespace 路径段用于精确选择分区；传入前应由调用方完成业务授权。Mems 只处理记忆，运行时状态由调用方管理。"
     ),
-    responses={200: {"description": "Memory was remembered successfully.", **TURN_WRITE_RESPONSE_EXAMPLE}},
+    responses={
+        200: {
+            "description": "Memory was remembered successfully.",
+            **TURN_WRITE_RESPONSE_EXAMPLE,
+        }
+    },
 )
 async def write_memory(
     request: MemsWriteRequest = Body(
@@ -228,9 +241,13 @@ async def write_memory(
     try:
         result = await service.remember(_to_write_command(request))
         return result
-    except Exception as e:
-        logger.error(f"Failed to write memory: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error(
+            "Failed to write memory",
+            exc_info=True,
+            extra={"event": "memory.write.failed", "error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post(
@@ -239,11 +256,16 @@ async def write_memory(
     summary="Query memory / 记忆检索",
     description=(
         "Search across L0 hot cache, L1 episodic, and L2 semantic memory. L0 recent memory and active L1 are searched alongside L2 distilled knowledge. "
-        "Archived L1 records are excluded from default online recall.\n\n"
+        "Use the same optional namespace path used for writes; it selects one exact partition. Archived L1 records are excluded from default online recall.\n\n"
         "跨 L0 热缓存、L1 情景记忆和 L2 语义记忆进行检索。L0 近期记忆与活跃 L1 一同参与检索，并连同 L2 蒸馏知识返回。"
-        "默认不会召回已归档的 L1 记录。"
+        "查询应使用写入时相同的可选 namespace 路径，精确检索对应分区。默认不会召回已归档的 L1 记录。"
     ),
-    responses={200: {"description": "Ranked hybrid memory results.", **SEARCH_MEMORY_RESPONSE_EXAMPLE}},
+    responses={
+        200: {
+            "description": "Ranked hybrid memory results.",
+            **SEARCH_MEMORY_RESPONSE_EXAMPLE,
+        }
+    },
 )
 async def search_memory(
     request: MemsQueryRequest = Body(
@@ -263,14 +285,17 @@ async def search_memory(
                 session_id=item.session_id,
                 tenant_id=item.tenant_id,
                 user_id=item.user_id,
-                scope=item.scope,
             )
             for item in result.items
         ]
         return MemsQueryResponse(query=result.query, results=items, total=result.total)
-    except Exception as e:
-        logger.error(f"Failed to search memories: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error(
+            "Failed to search memories",
+            exc_info=True,
+            extra={"event": "memory.query.failed", "error_type": type(exc).__name__},
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post(
@@ -316,7 +341,12 @@ async def redistill_memories(
         "Return component health checks together with memory-pipeline metrics such as pending distillation, pending archive, and stale knowledge counts.\n\n"
         "返回组件健康检查结果，以及记忆流水线指标，例如待蒸馏数量、待归档数量和陈旧知识数量。"
     ),
-    responses={200: {"description": "Component health checks and pipeline metrics.", **MEMS_STATUS_RESPONSE_EXAMPLE}},
+    responses={
+        200: {
+            "description": "Component health checks and pipeline metrics.",
+            **MEMS_STATUS_RESPONSE_EXAMPLE,
+        }
+    },
 )
 async def mems_status(
     service: StatusApplicationService = Depends(get_status_service),

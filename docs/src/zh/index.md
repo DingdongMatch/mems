@@ -27,7 +27,7 @@ features:
   - title: "L3 → L2 再蒸馏"
     details: "归档不是终点。模型升级后手动重蒸 L3，经版本链无损升级 L2，让系统随模型能力持续进化。"
   - title: "生产级隔离"
-    details: "内建 Tenant、User、Agent 硬边界与 Session、Scope 标签，适配多租户 SaaS 与企业级部署。"
+    details: "服务端生成的 namespace 统一 Tenant、User、Agent 存储分区规则；业务授权由调用方应用负责。"
   - title: "原子化接入"
     details: "第三方 Agent 只需 Remember 与 Recall 两步即可接入，无需感知底层存储。"
 ---

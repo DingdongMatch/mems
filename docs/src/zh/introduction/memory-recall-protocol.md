@@ -112,7 +112,9 @@ temporary_variables
 | Memory Lifecycle            | Context Window / Token Budget   |
 | 推荐候选记忆                 | Agent Decision                  |
 
-（已实现：当前请求 schema 只包含 identity / `scope` / `query` / `top_k`。）
+（已实现：请求 schema 包含 identity / `namespace` / `query` / `top_k`，服务端根据
+identity 与路径段生成内部 namespace。详见
+[Identity 与 Namespace](/zh/integration/identity-model)。）
 
 ### 1.4 与 Agent 无关（Agent-Agnostic）与 Memory Autonomy
 
@@ -160,7 +162,7 @@ MRP 的核心定位可以浓缩为四句话：
 | Evidence | 支撑 Memory 的历史记录引用（如 `source_l1_ids`） |
 | Provenance | Memory 的来源与演化链路（L2 → L1 → L3 指针） |
 | Identity | 硬隔离身份边界（`tenant_id` / `user_id` / `agent_id`） |
-| Scope | 上层业务自定义的软可见性标签 |
+| Namespace | Mems 根据经过验证的 identity 生成的不可变存储分区 |
 | L0 / L1 / L2 / L3 | Hot / Episodic / Distilled Knowledge / Archive |
 
 ## 3. 召回请求（Recall Request）
@@ -175,7 +177,6 @@ MRP 的核心定位可以浓缩为四句话：
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "top_k": 10
 }
 ```
@@ -188,7 +189,6 @@ MRP 的目标形态在以上字段之外增加 `memory_types` 与 `time_range`�
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "memory_types": ["l1_episodic", "l2_fact", "l2_summary"],
   "top_k": 10,
   "time_range": null
@@ -206,7 +206,8 @@ MRP 的目标形态在以上字段之外增加 `memory_types` 与 `time_range`�
 | 字段 | 语义 | 状态 |
 | --- | --- | --- |
 | `tenant_id` / `user_id` / `agent_id` | 硬身份边界（平级字段，见 3.3） | 已实现 |
-| `scope` | 软可见性标签（字符串，见 3.3） | 已实现 |
+| `namespace` | 调用方业务上下文的可选通用路径段 | 已实现；缺省时使用 identity 的默认精确分区 |
+| `MemoryNamespace` | 根据经过验证的 identity 与 `namespace` 生成的不可变存储分区 | 内部值；完整值不是请求字段 |
 | `query` | 检索文本，必填且不能为空白 | 已实现 |
 | `top_k` | 本次最多返回的候选条数（默认 5，范围 1-100） | 已实现 |
 | `memory_types` | 可选来源过滤；缺省跨 L0/L1/L2 全召回 | 规划中 |
@@ -216,7 +217,7 @@ MRP 的目标形态在以上字段之外增加 `memory_types` 与 `time_range`�
 `query` 用于语义 / 词法检索。服务端会对 Query 做关键词意图推断，并把结果作为
 内部排序加分（`intent_bonus`，**已实现**）；该机制不暴露为请求字段。
 
-### 3.3 身份与可见性（Identity & Scope）
+### 3.3 身份与 Namespace（Identity & Namespace）
 
 `tenant_id` / `user_id` / `agent_id` 是 Memory 的硬身份边界：
 
@@ -226,25 +227,29 @@ Identity（tenant_id / user_id / agent_id）
 Hard Isolation
 ```
 
-`scope` 是软可见性标签，只用于在同一身份范围内收窄可见集合：
+API 接受可选的 `namespace` 路径段（`string[]`），并根据它与经过验证的 identity
+生成带版本的不可变内部 namespace：
 
 ```text
-Scope（private / shared / team:* / ...）
-    ↓
-Soft Visibility
+("v1", "tenant", <tenant_id>, "user", <user_id>, "agent", <agent_id>,
+ "memories", ...<namespace>)
 ```
 
-Scope 不能替代或突破 Identity Isolation。
+例如，`namespace: ["projects", "prj_abc123"]` 可选择一个项目分区；路径段对 Mems
+是不透明值，应使用稳定标识。省略或传空列表时使用 identity 的默认分区，不会自动搜索
+子路径。写入与查询必须使用相同路径。客户端不能设置完整内部 namespace。Namespace 是
+存储分区标识，不是授权凭证。调用方应用负责认证调用者，
+并授权 identity 与业务上下文。共享记忆还必须使用代表共享所有者的 identity。记忆类型和
+检索属性仍作为记录字段，使一次召回可以跨越所选分区内的多个记忆类型。
 
 当前实现的过滤语义：
 
 - `agent_id` 必填，任何召回都按 agent 过滤；
-- `tenant_id` / `user_id` / `scope` 只有在请求中给出时才参与相等过滤；省略任一
-  维度都会放宽到该 agent 下该维度的全部记录；
-- 因此多用户场景不能只依赖 `agent_id` 隔离，调用方必须显式传 `user_id`
-  （必要时还有 `tenant_id`）；
-- Mems 不预设 `Tenant → User → Agent` 的层级树，身份是平级过滤字段，隔离强度
-  由调用方传入的身份字段决定。
+- 完整 `MemoryNamespace` 包含 `tenant_id` 和 `user_id`；可选 identity 缺省时进入独立的
+  空值分区，不会作为通配符；
+- 多用户场景应传入目标 `user_id`（必要时还有 `tenant_id`），以访问对应身份分区；
+- Mems 不预设业务上的 `Tenant → User → Agent` 层级树；namespace 是由平级身份字段和
+  可选调用方上下文派生的规范存储路径，授权仍由调用方应用负责。
 
 ### 3.4 session_id 的边界
 
@@ -329,8 +334,7 @@ MRP 目标响应形态：
       "source_l1_ids": [102, 231],
       "created_at": "2026-04-01T10:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     }
   ],
   "total": 1
@@ -356,7 +360,7 @@ MRP 目标响应形态：
 | `source_l1_ids` | 证据链路（见 5.1） | 已实现 |
 | `created_at` | 时间上下文，语义随来源不同（见 5.3） | 已实现 |
 | `session_id` | 来源会话（仅 L0 / L1 有值） | 已实现 |
-| `tenant_id` / `user_id` / `scope` | 身份上下文 | 已实现 |
+| `tenant_id` / `user_id` | 身份上下文 | 已实现 |
 | `total` | 本次实际返回的 `results` 条数 | 已实现 |
 
 `source` 取值与请求侧 `memory_types` 一一对应，不引入额外业务词表：
@@ -670,8 +674,8 @@ MRP 应提供稳定的错误语义。建议错误结构：
 ```json
 {
   "error": {
-    "code": "INVALID_SCOPE",
-    "message": "Invalid memory scope"
+    "code": "INVALID_IDENTITY",
+    "message": "Invalid memory identity"
   }
 }
 ```
@@ -680,7 +684,6 @@ MRP 应提供稳定的错误语义。建议错误结构：
 
 ```text
 INVALID_REQUEST
-INVALID_SCOPE
 INVALID_IDENTITY
 INVALID_MEMORY_TYPE
 MEMORY_ACCESS_DENIED
@@ -746,7 +749,6 @@ Request（当前已实现字段）：
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "top_k": 5
 }
 ```
@@ -765,8 +767,7 @@ Response（当前字段形态示例，省略值为 null 的可选字段；`id` /
       "source_l1_ids": [102, 231],
       "created_at": "2026-04-01T10:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     }
   ],
   "total": 1
@@ -801,7 +802,6 @@ L1 原始经历
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "time_range": {
     "from": "2026-01-01",
     "to": "2026-06-30"
@@ -821,7 +821,7 @@ L1 原始经历
 
 - 支持 `query`；
 - 支持 Identity 字段并按请求身份边界过滤；
-- 遵守 Scope 语义；
+- 使用由获准 identity 派生的服务端 namespace；
 - 遵守 Runtime State Boundary（不接收运行时状态）；
 - 遵守 `top_k` 语义（返回条数上限，不是 token 预算）。
 

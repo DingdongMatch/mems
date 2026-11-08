@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mems.domain.identity import MemoryIdentity
+from mems.domain.identity import MemoryIdentity, MemoryNamespace
 
 
 class Profile(BaseModel):
@@ -23,7 +23,7 @@ class Profile(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     category: str
     key: str
     value: str
@@ -41,7 +41,9 @@ class Profile(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
 
@@ -54,7 +56,7 @@ class Fact(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     subject: str
     predicate: str
     object: str
@@ -73,7 +75,9 @@ class Fact(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
 
@@ -86,7 +90,7 @@ class Event(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     subject: str
     action: str
     object: str
@@ -105,7 +109,7 @@ class Summary(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     summary_type: str = "long_term"
     content: str
     vector_id: Optional[str] = None
@@ -122,7 +126,9 @@ class Summary(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
 
@@ -135,7 +141,7 @@ class ConflictLog(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     memory_type: str
     old_value: str
     new_value: str
@@ -200,7 +206,7 @@ class DistillSource:
     user_id: Optional[str]
     agent_id: str
     session_id: Optional[str]
-    scope: Optional[str]
+    namespace: Optional[str]
     content: str
     source_id: int
     created_at: datetime
@@ -215,7 +221,9 @@ class DistillSource:
             user_id=self.user_id,
             agent_id=self.agent_id,
             session_id=self.session_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
     @classmethod
@@ -226,7 +234,7 @@ class DistillSource:
             user_id=memory.user_id,
             agent_id=memory.agent_id,
             session_id=memory.session_id,
-            scope=memory.scope,
+            namespace=memory.namespace,
             content=memory.content,
             source_id=memory.id or 0,
             created_at=memory.created_at,
@@ -250,7 +258,7 @@ class DistillSource:
             user_id=record.get("user_id"),
             agent_id=record.get("agent_id", ""),
             session_id=record.get("session_id"),
-            scope=record.get("scope"),
+            namespace=record.get("namespace"),
             content=record.get("content", ""),
             source_id=int(record["id"]) if record.get("id") is not None else 0,
             created_at=created_at,

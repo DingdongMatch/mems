@@ -17,13 +17,13 @@ class SqlRepository:
 
 
 def apply_identity_filter(query, model, identity: Optional[MemoryIdentity]):
-    """Apply tenant/user/scope filters to a SQLModel select statement."""
+    """Apply tenant/user/namespace filters to a SQLModel select statement."""
     if identity is None:
         return query
     if identity.tenant_id is not None:
         query = query.where(model.tenant_id == identity.tenant_id)
     if identity.user_id is not None:
         query = query.where(model.user_id == identity.user_id)
-    if identity.scope is not None:
-        query = query.where(model.scope == identity.scope)
+    if identity.namespace_key is not None:
+        query = query.where(model.namespace == identity.namespace_key)
     return query

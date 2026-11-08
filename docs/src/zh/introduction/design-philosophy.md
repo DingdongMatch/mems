@@ -6,7 +6,7 @@
 
 ## 去中心化身份模型（Decentralized Schema）
 
-Mems 不预设唯一的业务身份模型。`tenant_id`、`user_id`、`agent_id` 构成硬边界，`session_id` 是可选的动作溯源，`scope` 是由上层业务定义的软可见性标签；同一套模型即可覆盖单用户、多用户与多 Agent 场景。
+Mems 不预设唯一的上游业务身份模型。请求携带 `tenant_id`、`user_id`、`agent_id`，`session_id` 是可选的动作溯源。API 支持可选通用 `namespace` 路径表达调用方业务上下文；Mems 将它与经过验证的 identity 组合，生成不可变 `MemoryNamespace`。业务授权由调用方应用定义，并传入获准的 identity 与 namespace 上下文。
 
 ## SQL 优先的在线真相源（SQL-First Online Truth）
 

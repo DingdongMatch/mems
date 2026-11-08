@@ -6,6 +6,7 @@ import json
 from fastapi.testclient import TestClient
 
 from mems.config import settings
+from mems.domain.identity import MemoryNamespace
 from mems.infrastructure.external.redis_service import RedisService
 
 
@@ -45,7 +46,7 @@ def test_pipeline_publishes_write_and_append_events(test_app, monkeypatch):
                 "user_id": "user_alice",
                 "agent_id": "agent_pipe",
                 "session_id": "session_pipe",
-                "scope": "private",
+                "namespace": ["projects", "prj_pipe"],
                 "content": "User prefers Rust.",
                 "messages": [{"role": "user", "content": "I prefer Rust."}],
             },
@@ -57,7 +58,7 @@ def test_pipeline_publishes_write_and_append_events(test_app, monkeypatch):
                 "user_id": "user_alice",
                 "agent_id": "agent_pipe",
                 "session_id": "session_pipe",
-                "scope": "private",
+                "namespace": ["projects", "prj_pipe"],
                 "messages": [{"role": "user", "content": "Also like Chinese."}],
             },
         )
@@ -76,7 +77,12 @@ def test_pipeline_publishes_write_and_append_events(test_app, monkeypatch):
     assert write_event["user_id"] == "user_alice"
     assert write_event["agent_id"] == "agent_pipe"
     assert write_event["session_id"] == "session_pipe"
-    assert write_event["scope"] == "private"
+    assert write_event["namespace"] == MemoryNamespace.build(
+        tenant_id="tenant_demo",
+        user_id="user_alice",
+        agent_id="agent_pipe",
+        path=("projects", "prj_pipe"),
+    ).key
     assert write_event["content"] == "User prefers Rust."
     assert json.loads(write_event["messages"]) == [
         {"role": "user", "content": "I prefer Rust."}
@@ -144,7 +150,7 @@ def test_real_service_publishes_only_when_enabled(monkeypatch):
             session_id=None,
             messages=[{"role": "user", "content": "Unit test memory"}],
             content="Unit test memory",
-            scope=None,
+            namespace=None,
         )
 
     asyncio.run(run(enabled=False))
@@ -186,7 +192,7 @@ def test_publish_failure_does_not_break_write(monkeypatch):
             session_id=None,
             messages=[{"role": "user", "content": "Still stored"}],
             content="Still stored",
-            scope=None,
+            namespace=None,
         )
     )
     assert l0.agent_id == "agent_unit"
@@ -219,7 +225,7 @@ def test_empty_stream_name_disables_publish(monkeypatch):
             session_id=None,
             messages=[{"role": "user", "content": "Guard test"}],
             content="Guard test",
-            scope=None,
+            namespace=None,
         )
     )
     assert l0.agent_id == "agent_unit"

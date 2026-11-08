@@ -6,6 +6,7 @@ import logging
 
 from mems.application.commands import WriteMemoryCommand, WriteMemoryResult
 from mems.config import settings
+from mems.domain.identity import MemoryIdentity
 from mems.domain.memory import EpisodicMemory
 from mems.domain.outbox import OutboxEvent, OutboxEventType
 from mems.domain.ports import (
@@ -78,6 +79,13 @@ class WriteMemoryService:
     async def remember(self, command: WriteMemoryCommand) -> WriteMemoryResult:
         new_messages = list(command.messages)
         memory_content = command.content or _messages_to_content(new_messages)
+        identity = MemoryIdentity(
+            tenant_id=command.tenant_id,
+            user_id=command.user_id,
+            agent_id=command.agent_id,
+            session_id=command.session_id,
+            namespace_segments=tuple(command.namespace),
+        )
 
         l0 = await self._store.append_messages(
             tenant_id=command.tenant_id,
@@ -88,7 +96,7 @@ class WriteMemoryService:
             content=memory_content,
             ttl_seconds=command.ttl_seconds,
             max_buffer_size=DEFAULT_CONTEXT_WINDOW,
-            scope=command.scope,
+            namespace=identity.namespace_key,
         )
 
         identity = l0.identity
@@ -116,7 +124,7 @@ class WriteMemoryService:
                         "tenant_id": identity.tenant_id,
                         "user_id": identity.user_id,
                         "session_id": identity.session_id,
-                        "scope": identity.scope,
+                        "namespace": identity.namespace_key,
                     },
                 )
             )
@@ -135,7 +143,7 @@ class WriteMemoryService:
             user_id=l0.user_id,
             agent_id=l0.agent_id,
             session_id=l0.session_id,
-            scope=l0.scope,
+            namespace=command.namespace,
             importance_score=command.importance_score,
             content=memory_content,
             messages=new_messages,

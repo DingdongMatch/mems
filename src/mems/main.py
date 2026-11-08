@@ -9,9 +9,14 @@ from mems.infrastructure.persistence.database import init_db
 from mems.interfaces.api import memories
 from mems.interfaces.bootstrap import build_outbox_worker
 from mems.infrastructure.external.scheduler import scheduler_service
+from mems.infrastructure.external.observability import (
+    RequestContextMiddleware,
+    configure_logging,
+)
 
 
 logger = logging.getLogger(__name__)
+configure_logging(settings.LOG_LEVEL)
 
 
 @asynccontextmanager
@@ -65,14 +70,14 @@ app = FastAPI(
         "- **🧠 Asynchronous knowledge distillation (L2)**: An automated LLM pipeline that extracts stable semantic facts from raw L1 narratives, enabling evolution from experience to cognition.\n"
         "- **🔍 Evidence grounding**: L2 distilled outputs stay strongly linked to the original L1 source material, avoiding black-box knowledge and keeping every inference traceable.\n"
         "- **📜 Century-scale archive (L3)**: A text-first strategy that turns ultra-long-term memory into persistent JSONL files, resisting hardware turnover and format obsolescence.\n"
-        "- **🛡️ Production-grade isolation**: A built-in multi-tenant permission model across Tenant/User/Agent/Session, suitable for SaaS and enterprise agent deployments.\n"
+        "- **🛡️ Consistent memory partitioning**: Tenant/User/Agent identity and caller-provided namespace context are applied across storage adapters; business authorization stays in the caller application.\n"
         "- **🔌 Atomic integration**: An extremely compact API design centered on `Remember -> Recall`.\n\n"
         "与传统的单层向量数据库（RAG）不同，Mems 解决了 Agent 在长期运行中的“信息熵增”问题：\n\n"
         "- **⚡ 热记忆缓存 (L0)**：基于 Redis 的近期记忆缓存，用于快速召回，但不接管 Agent 运行时状态。\n"
         "- **🧠 异步知识蒸馏 (L2)**：自动化 LLM 流水线，从 L1 原始叙事中提炼**稳定的语义事实**，实现从“经历”到“认知”的进化。\n"
         "- **🔍 证据溯源 (Grounding)**：L2 提炼结果强关联 L1 原始语料，拒绝黑盒知识，确保 Agent 每一个推论都有据可查。\n"
         "- **📜 跨世纪归档 (L3)**：采用 **Text-First** 策略，将超长期记忆转化为 JSONL 持久化文件，对抗硬件更迭与格式淘汰。\n"
-        "- **🛡️ 生产级隔离**：内建多租户（Tenant/User/Agent/Session）权限模型，完美适配 SaaS 与企业级 Agent 部署。\n"
+        "- **🛡️ 一致的记忆分区**：Tenant/User/Agent identity 与调用方提供的 namespace 上下文在各存储适配器中保持一致；业务授权由调用方应用负责。\n"
         "- **🔌 原子化接入**：围绕 `Remember -> Recall` 的极简 API 设计。\n\n"
         "## Public APIs / 公开接口\n"
         "1. `POST /v1/mems/write` remembers memory content into L0/L1.\n"
@@ -89,6 +94,7 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.add_middleware(RequestContextMiddleware)
 
 app.include_router(memories.router)
 

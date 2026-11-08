@@ -20,7 +20,7 @@ Unlike a single-layer vector database or basic RAG stack, Mems is designed to co
 - **🧠 Asynchronous knowledge distillation (L2)**: An automated LLM pipeline that extracts stable semantic facts from raw L1 narratives, enabling evolution from experience to cognition.
 - **🔍 Evidence grounding**: L2 distilled outputs stay strongly linked to the original L1 source material, avoiding black-box knowledge and keeping every inference traceable.
 - **📜 Century-scale archive (L3)**: A text-first strategy that turns ultra-long-term memory into persistent JSONL files, resisting hardware turnover and format obsolescence.
-- **🛡️ Production-grade isolation**: A built-in multi-tenant permission model across Tenant/User/Agent/Session, suitable for SaaS and enterprise agent deployments.
+- **🛡️ Consistent memory partitioning**: Tenant/User/Agent identity and optional caller-provided namespace paths are applied across storage adapters; business authorization stays in the caller application.
 - **🔌 Atomic integration**: An extremely compact API design where agent memory can be integrated in just three steps: `Context -> Query -> Write`.
 
 ## Architecture Snapshot
@@ -90,7 +90,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-42",
     "agent_id": "demo-agent",
     "session_id": "demo-session",
-    "scope": "private",
     "messages": [
       {"role": "user", "content": "Remember that I like Rust"},
       {"role": "assistant", "content": "Got it."}
@@ -105,7 +104,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "acme",
     "user_id": "user-42",
     "agent_id": "demo-agent",
-    "scope": "private",
     "query": "What do I like?"
   }'
 ```
@@ -142,8 +140,6 @@ to what the current model can extract:
 
 ```bash
 curl -X POST http://localhost:8210/v1/mems/redistill
-# or
-uv run python -m mems.redistill --agent demo-agent
 ```
 
 Archived JSONL keeps the full raw memory, so re-distillation reads from L3,

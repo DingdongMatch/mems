@@ -20,7 +20,7 @@ class ArchiveBatch(BaseModel):
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
     agent_id: str
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     time_period: str
     summary_text: str
     file_path: str

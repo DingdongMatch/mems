@@ -45,7 +45,6 @@ Mems 记忆随模型进化：L3 归档可再蒸馏，模型升级后无损升级
 src/mems/
 ├── main.py               # FastAPI 入口 + lifespan（含进程内 Outbox worker）
 ├── config.py             # pydantic-settings 配置（从 .env 读取）
-├── redistill.py          # CLI 入口 python -m mems.redistill
 ├── worker.py             # 独立 Outbox worker 入口 python -m mems.worker
 │
 ├── domain/               # 领域层：实体/聚合/值对象/领域服务与端口（不依赖基础设施）
@@ -135,14 +134,15 @@ async def create_example(session: Session = Depends(get_session)):
 - `user_id`: 多用户 Agent 场景下建议显式传入
 - `agent_id`: Agent 边界
 - `session_id`: 可选会话来源标识
-- `scope`: 上层业务自定义的可见性标签
 
 推荐原则：
 
 - `tenant_id / user_id / agent_id` 是硬边界
 - `session_id` 是可选的动作溯源标识，Mems 不依赖它做上下文管理
-- `scope` 是软可见性标签，由上层业务定义
 - 默认不要只靠 `agent_id` 做多用户隔离
+- API 支持可选 `namespace: list[str]`，由调用方传递通用业务上下文路径段，例如 `["projects", "prj_abc123"]`；它不是权限声明
+- Mems 将经过验证的 identity 与请求 `namespace` 组合，生成不可变的 `MemoryNamespace`；完整内部 namespace 不由客户端指定
+- 写入和查询按 identity 与完整 namespace 精确匹配；省略 namespace 使用该 identity 的默认分区，不隐式搜索子路径
 
 ### 3.1.3 核心模型说明
 
@@ -153,7 +153,7 @@ class MemsWriteRequest(BaseModel):
     user_id: str | None
     agent_id: str
     session_id: str | None
-    scope: str | None
+    namespace: list[str] = Field(default_factory=list)  # 通用分区上下文路径段
     content: str | None       # 直接记忆文本
     messages: list[MemsMessage]  # 来源消息（可选）
     ttl_seconds: int
@@ -162,6 +162,8 @@ class MemsWriteRequest(BaseModel):
 
 规则：
 - `content` 和 `messages` 至少提供一个
+- `namespace` 是通用路径段，不是 DSH 专属字段；调用方应用必须先授权，再从可信业务上下文生成它
+- 项目共享记忆仍须使用代表共享所有者的 identity；仅传相同 namespace 不会跨越 identity 边界
 - 如果同时提供，`content` 作为记忆文本用于检索/蒸馏，`messages` 作为结构化原文保留
 - `importance_score` 达到 `DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）时，
   写入后立即对该 agent 做 batch=1 的定向蒸馏；否则走全局阈值检查
@@ -170,7 +172,7 @@ class MemsWriteRequest(BaseModel):
 **MemsL1Episodic**（数据库表）
 ```python
 class MemsL1Episodic(SQLModel, table=True):
-    tenant_id / user_id / agent_id / session_id / scope
+    tenant_id / user_id / agent_id / session_id / namespace (canonical key)
     content: str                     # 记忆文本（用于检索和蒸馏）
     messages_json: list[dict]        # 结构化来源消息（用于回放和审计）
     vector_id: str                   # 向量副本 id
@@ -183,11 +185,15 @@ class MemsL1Episodic(SQLModel, table=True):
 **MemsL0Working**（Redis 快照）
 ```python
 class MemsL0Working(BaseModel):
-    tenant_id / user_id / agent_id / session_id / scope
+    tenant_id / user_id / agent_id / session_id
+    namespace: str  # MemoryNamespace 的服务端生成规范键
     content: str | None
     short_term_buffer: list[dict]
     expires_at: datetime
 ```
+
+**MemsQueryRequest** 同样支持 `namespace: list[str]`，用于精确查询对应分区；
+省略时使用该 identity 的默认分区，不隐式扩展到子路径；写入与查询需使用相同路径。
 
 **QueryResultItem**
 ```python
@@ -198,7 +204,7 @@ class QueryResultItem(BaseModel):
     created_at: datetime | None
     source_l1_ids: list[int]
     session_id: str | None
-    tenant_id / user_id / scope
+    tenant_id / user_id
 ```
 
 ### 3.2 新增数据库模型
@@ -279,10 +285,10 @@ session: Session = Depends(get_session)
 # 获取 redis 服务
 redis: RedisService = Depends(get_redis_service)  # 测试环境自动注入 FakeRedisService
 l0 = await redis.write(tenant_id=..., user_id=..., agent_id=..., session_id=..., messages=..., content=...)
-l0 = await redis.read(agent_id=..., session_id=..., tenant_id=..., user_id=..., scope=...)
+l0 = await redis.read(agent_id=..., session_id=..., tenant_id=..., user_id=...)
 ```
 
-L0 Redis key 统一复用 `MemoryIdentity.redis_key()`，避免适配器重复实现 key 规则。
+L0 Redis key 统一复用服务端生成的 `MemoryNamespace` 与 `session_id`，避免适配器重复实现 key 规则。
 
 ### 4.3 Embedding 服务
 
@@ -357,7 +363,7 @@ async def trigger_archive_automatically(agent_id: str = None) -> Dict:
 
 ### 5.4 再蒸馏任务（手动）
 
-- **触发方式**: `POST /v1/mems/redistill` 或 CLI `python -m mems.redistill`
+- **触发方式**: `POST /v1/mems/redistill`
 - **输入输出**: 读取 L3 JSONL 归档，复用 `DistillApplicationService.process_source`
   走提取 + 确定性对账 + 版本链升级 L2；`source_id` 保留原始 L1 id，并记录
   `l3_path/l3_line` 兜底证据指针

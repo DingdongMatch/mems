@@ -27,7 +27,7 @@ The request body is JSON:
 | `tenant_id` | string | no | `null` | — | tenant hard boundary |
 | `user_id` | string | no | `null` | — | user hard boundary; pass it explicitly in multi-user scenarios |
 | `session_id` | string | no | `null` | — | action provenance (not an isolation boundary) |
-| `scope` | string | no | `null` | — | soft visibility label |
+| `namespace` | string[] | no | `[]` | up to 16 non-empty segments, each at most 128 chars | generic caller context for a storage partition |
 | `ttl_seconds` | number | no | `1800` | 1-604800 | TTL of the L0 hot snapshot (seconds); L1 records are not affected by this value |
 | `importance_score` | number | no | `0.5` | 0-1 | importance, used for distillation priority |
 
@@ -58,7 +58,6 @@ both          → content becomes the memory text; messages are kept as structur
   "user_id": "user-001",
   "agent_id": "agent-001",
   "session_id": "session-007",
-  "scope": "private",
   "content": "The user likes Rust and prefers concise answers.",
   "messages": [
     {"role": "user", "content": "Remember that I like Rust."},
@@ -77,7 +76,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-001",
     "agent_id": "agent-001",
     "session_id": "session-007",
-    "scope": "private",
     "content": "The user likes Rust and prefers concise answers.",
     "importance_score": 0.8
   }'
@@ -94,7 +92,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
   "user_id": "user-001",
   "agent_id": "agent-001",
   "session_id": "session-007",
-  "scope": "private",
   "importance_score": 0.8,
   "content": "The user likes Rust and prefers concise answers.",
   "messages": [
@@ -113,7 +110,8 @@ curl -X POST http://localhost:8210/v1/mems/write \
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `success` | boolean | whether the request was handled successfully |
-| `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope` | string \| null | echoed identity fields |
+| `tenant_id` / `user_id` / `agent_id` / `session_id` | string \| null | echoed identity fields |
+| `namespace` | string[] | caller's namespace path echoed by the service |
 | `importance_score` | number | echoed importance |
 | `content` | string | the memory text actually stored (given `content`, or folded from `messages`) |
 | `messages` | array | structured messages from this request (not the merged full buffer) |
@@ -123,6 +121,13 @@ curl -X POST http://localhost:8210/v1/mems/write \
 | `message` | string | human-readable result message |
 
 ## Behavior After a Write
+
+The API accepts optional `namespace` path segments, for example
+`["projects", "prj_abc123"]`. Mems combines these segments with validated
+identity to derive its immutable internal `MemoryNamespace`; callers do not
+send the complete internal value. The caller application authorizes the project
+before supplying its stable identifier. Omitting the field selects the default
+partition for the identity.
 
 ### 1. L0 hot snapshot
 

@@ -13,12 +13,15 @@ from typing import Any, Dict
 
 def content_fingerprint(record: Dict[str, Any]) -> str:
     """Stable fingerprint of identity + content + messages."""
+    identity = {
+        "tenant_id": record.get("tenant_id"),
+        "user_id": record.get("user_id"),
+        "agent_id": record.get("agent_id"),
+    }
+    identity["namespace"] = record.get("namespace")
     canonical = json.dumps(
         {
-            "tenant_id": record.get("tenant_id"),
-            "user_id": record.get("user_id"),
-            "agent_id": record.get("agent_id"),
-            "scope": record.get("scope"),
+            **identity,
             "content": record.get("content"),
             "messages": record.get("messages"),
         },

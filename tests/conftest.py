@@ -131,7 +131,7 @@ class FakeWorkingMemoryStore:
         session_id: str | None,
         messages: list[dict[str, str]],
         content: str | None = None,
-        scope: str | None = None,
+        namespace: str | None = None,
         ttl_seconds: int = 1800,
         event_type: str = "write",
     ) -> WorkingMemory:
@@ -140,12 +140,12 @@ class FakeWorkingMemoryStore:
             user_id=user_id,
             agent_id=agent_id,
             session_id=session_id,
-            scope=scope,
+            namespace=namespace,
             content=content,
             short_term_buffer=messages,
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         )
-        self._store[(tenant_id, user_id, scope, agent_id, session_id)] = l0
+        self._store[(tenant_id, user_id, namespace, agent_id, session_id)] = l0
         self._publish(l0, event_type)
         return l0
 
@@ -155,16 +155,16 @@ class FakeWorkingMemoryStore:
         session_id: str | None = None,
         tenant_id: str | None = None,
         user_id: str | None = None,
-        scope: str | None = None,
+        namespace: str | None = None,
     ) -> WorkingMemory | None:
-        return self._store.get((tenant_id, user_id, scope, agent_id, session_id))
+        return self._store.get((tenant_id, user_id, namespace, agent_id, session_id))
 
     async def list_active(
         self,
         agent_id: str,
         tenant_id: str | None = None,
         user_id: str | None = None,
-        scope: str | None = None,
+        namespace: str | None = None,
         limit: int = 10,
     ) -> list[WorkingMemory]:
         snapshots = []
@@ -175,7 +175,7 @@ class FakeWorkingMemoryStore:
                 continue
             if user_id is not None and u != user_id:
                 continue
-            if scope is not None and s != scope:
+            if namespace is not None and s != namespace:
                 continue
             snapshots.append(l0)
         snapshots.sort(key=lambda item: item.expires_at, reverse=True)
@@ -187,10 +187,10 @@ class FakeWorkingMemoryStore:
         session_id: str | None = None,
         tenant_id: str | None = None,
         user_id: str | None = None,
-        scope: str | None = None,
+        namespace: str | None = None,
     ) -> bool:
         return (
-            self._store.pop((tenant_id, user_id, scope, agent_id, session_id), None)
+            self._store.pop((tenant_id, user_id, namespace, agent_id, session_id), None)
             is not None
         )
 
@@ -204,9 +204,9 @@ class FakeWorkingMemoryStore:
         content: str | None = None,
         ttl_seconds: int = 1800,
         max_buffer_size: int = 10,
-        scope: str | None = None,
+        namespace: str | None = None,
     ) -> WorkingMemory:
-        existing = self._store.get((tenant_id, user_id, scope, agent_id, session_id))
+        existing = self._store.get((tenant_id, user_id, namespace, agent_id, session_id))
         if existing is None:
             trimmed = messages[-max_buffer_size:] if max_buffer_size > 0 else messages
             return await self.write(
@@ -216,11 +216,11 @@ class FakeWorkingMemoryStore:
                 session_id=session_id,
                 messages=trimmed,
                 content=content,
-                scope=scope,
+                namespace=namespace,
                 ttl_seconds=ttl_seconds,
             )
 
-        merged = existing.merge_append(messages, content, scope, max_buffer_size)
+        merged = existing.merge_append(messages, content, namespace, max_buffer_size)
         return await self.write(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -228,7 +228,7 @@ class FakeWorkingMemoryStore:
             session_id=session_id,
             messages=merged.short_term_buffer,
             content=merged.content,
-            scope=merged.scope,
+            namespace=merged.namespace,
             ttl_seconds=ttl_seconds,
             event_type="append",
         )
@@ -289,7 +289,7 @@ class FakeVectorService:
                         tenant_id=summary.tenant_id,
                         user_id=summary.user_id,
                         agent_id=summary.agent_id,
-                        scope=summary.scope,
+                        namespace=summary.namespace,
                         vector_id=summary.vector_id,
                         content=summary.content,
                     ),

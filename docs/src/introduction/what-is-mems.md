@@ -25,7 +25,7 @@ For integrators, the API is simple:
 
 Archives are not a dead end. L3 JSONL keeps the full raw memory, so archived
 records can re-enter the distillation pipeline whenever the underlying model
-gets better: run `POST /v1/mems/redistill` (or `python -m mems.redistill`) to
+gets better: call `POST /v1/mems/redistill` to
 re-extract and reconcile with the current `OPENAI_MODEL`, and upgrade L2
 knowledge losslessly through the version chain (`supersedes` + conflict log).
 Records are deduplicated by content fingerprint + model, so old data becomes

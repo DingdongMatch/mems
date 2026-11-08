@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from time import perf_counter
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
@@ -25,6 +26,7 @@ from mems.infrastructure.external.clock import get_clock
 from mems.infrastructure.external.embedding import get_embedding_service
 from mems.infrastructure.external.jsonl import JsonlReader
 from mems.infrastructure.external.llm_client import get_llm_port
+from mems.infrastructure.external.observability import bind_log_context
 from mems.infrastructure.external.vector_service import get_vector_service
 from mems.infrastructure.persistence.database import sql_session_factory
 from mems.infrastructure.persistence.repositories import build_repositories
@@ -94,17 +96,18 @@ async def trigger_archive_automatically(
             targets = [(None, None, agent_id, None)]
 
     if not targets:
-        logger.info("No records to archive")
+        logger.info(
+            "Archive trigger found no expired records",
+            extra={"event": "archive.trigger.empty", "operation": "archive_trigger"},
+        )
         return {"triggered": False, "reason": "no expired records", "enqueued": 0}
 
     enqueued = 0
-    for tenant_id, user_id, aid, scope in targets:
-        aggregate_id = f"{aid}:{tenant_id or '_'}:{user_id or '_'}:{scope or '_'}"
+    for tenant_id, user_id, aid, namespace in targets:
+        aggregate_id = f"{aid}:{tenant_id or '_'}:{user_id or '_'}:{namespace or '_'}"
         with sql_session_factory.create() as session:
             repos = build_repositories(session)
-            if repos.outbox.exists_active(
-                OutboxEventType.ARCHIVE_AGENT, aggregate_id
-            ):
+            if repos.outbox.exists_active(OutboxEventType.ARCHIVE_AGENT, aggregate_id):
                 continue
             repos.outbox.add(
                 OutboxEvent(
@@ -114,7 +117,7 @@ async def trigger_archive_automatically(
                         "agent_id": aid,
                         "tenant_id": tenant_id,
                         "user_id": user_id,
-                        "scope": scope,
+                        "namespace": namespace,
                         "days": settings.ARCHIVE_DAYS,
                     },
                 )
@@ -122,7 +125,15 @@ async def trigger_archive_automatically(
             SqlUnitOfWork(session).commit()
             enqueued += 1
 
-    logger.info(f"Archive trigger enqueued {enqueued} jobs")
+    logger.info(
+        "Archive trigger enqueued jobs",
+        extra={
+            "event": "archive.trigger.completed",
+            "operation": "archive_trigger",
+            "count": enqueued,
+            "result": "success",
+        },
+    )
     return {"triggered": True, "reason": "scheduled", "enqueued": enqueued}
 
 
@@ -133,6 +144,7 @@ async def trigger_redistill(
     min_importance: float = 0.0,
     batch_size: Optional[int] = None,
 ) -> RedistillResponse:
+    started = perf_counter()
     batch_size = batch_size or settings.REDISTILL_BATCH_SIZE
     model = settings.OPENAI_MODEL
     start_date = _as_utc(start_date) if start_date else None
@@ -160,7 +172,14 @@ async def trigger_redistill(
             for archive in archives:
                 path = Path(archive.file_path)
                 if not path.exists():
-                    logger.warning(f"Archive file missing: {path}")
+                    logger.warning(
+                        "Archive file is missing",
+                        extra={
+                            "event": "redistill.archive_missing",
+                            "operation": "redistill",
+                            "result": "skipped",
+                        },
+                    )
                     continue
                 records = reader.read(path)
                 for line_no, record in enumerate(records, start=1):
@@ -170,8 +189,7 @@ async def trigger_redistill(
                         continue
                     if (
                         min_importance > 0
-                        and float(record.get("importance_score", 0.0))
-                        < min_importance
+                        and float(record.get("importance_score", 0.0)) < min_importance
                     ):
                         continue
                     record_created = _record_created_at(record)
@@ -192,10 +210,24 @@ async def trigger_redistill(
                         record, str(path), line_no
                     )
                     try:
-                        created_in, updated_in = await service.process_source(source)
+                        with bind_log_context(
+                            operation="redistill",
+                            source_l1_id=source.source_id,
+                        ):
+                            created_in, updated_in = await service.process_source(
+                                source
+                            )
                     except Exception as exc:
                         logger.error(
-                            f"Re-distill failed for {path}:{line_no}: {exc}"
+                            "Re-distillation source failed",
+                            exc_info=True,
+                            extra={
+                                "event": "redistill.source.failed",
+                                "operation": "redistill",
+                                "source_l1_id": source.source_id,
+                                "error_type": type(exc).__name__,
+                                "result": "failed",
+                            },
                         )
                         continue
 
@@ -207,6 +239,20 @@ async def trigger_redistill(
                     break
             SqlUnitOfWork(session).commit()
 
+        logger.info(
+            "Re-distillation run completed",
+            extra={
+                "event": "redistill.completed",
+                "operation": "redistill",
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "count": processed,
+                "l2_created": created,
+                "l2_updated": updated,
+                "skipped": skipped,
+                "model": model,
+                "result": "success",
+            },
+        )
         return RedistillResponse(
             success=True,
             processed=processed,
@@ -219,7 +265,17 @@ async def trigger_redistill(
             ),
         )
     except Exception as exc:
-        logger.error(f"Re-distill run failed: {exc}")
+        logger.error(
+            "Re-distillation run failed",
+            exc_info=True,
+            extra={
+                "event": "redistill.failed",
+                "operation": "redistill",
+                "duration_ms": round((perf_counter() - started) * 1000, 2),
+                "error_type": type(exc).__name__,
+                "result": "failed",
+            },
+        )
         return RedistillResponse(
             success=False,
             processed=0,
@@ -254,7 +310,7 @@ class OutboxWorker:
             agent_id=payload["agent_id"],
             tenant_id=payload.get("tenant_id"),
             user_id=payload.get("user_id"),
-            scope=payload.get("scope"),
+            namespace=payload.get("namespace"),
             days=payload.get("days", settings.ARCHIVE_DAYS),
         )
 
@@ -312,24 +368,55 @@ class OutboxWorker:
         for event in events:
             if event.id is None:
                 continue
-            try:
-                with self._session_factory.create() as session:
-                    await self._dispatch(session, event)
-                    build_repositories(session).outbox.mark_done(event.id)
-                    SqlUnitOfWork(session).commit()
-            except Exception as exc:
-                logger.warning(
-                    f"Outbox event {event.id} ({event.event_type}) failed: {exc}"
+            event_started = perf_counter()
+            with bind_log_context(
+                outbox_event_id=event.id,
+                outbox_type=event.event_type,
+                operation="outbox_dispatch",
+            ):
+                logger.info(
+                    "Outbox event processing started",
+                    extra={"event": "outbox.event.started", "attempts": event.attempts},
                 )
-                backoff = min(
-                    2 ** max(event.attempts, 0), self._max_backoff_seconds
-                )
-                available_at = get_clock().now() + timedelta(seconds=backoff)
-                with self._session_factory.create() as session:
-                    build_repositories(session).outbox.mark_failed(
-                        event.id, str(exc), available_at
+                try:
+                    with self._session_factory.create() as session:
+                        await self._dispatch(session, event)
+                        build_repositories(session).outbox.mark_done(event.id)
+                        SqlUnitOfWork(session).commit()
+                    logger.info(
+                        "Outbox event processing completed",
+                        extra={
+                            "event": "outbox.event.completed",
+                            "attempts": event.attempts,
+                            "duration_ms": round(
+                                (perf_counter() - event_started) * 1000, 2
+                            ),
+                            "result": "success",
+                        },
                     )
-                    SqlUnitOfWork(session).commit()
+                except Exception as exc:
+                    logger.warning(
+                        "Outbox event processing failed",
+                        exc_info=True,
+                        extra={
+                            "event": "outbox.event.failed",
+                            "attempts": event.attempts,
+                            "duration_ms": round(
+                                (perf_counter() - event_started) * 1000, 2
+                            ),
+                            "error_type": type(exc).__name__,
+                            "result": "retrying",
+                        },
+                    )
+                    backoff = min(
+                        2 ** max(event.attempts, 0), self._max_backoff_seconds
+                    )
+                    available_at = get_clock().now() + timedelta(seconds=backoff)
+                    with self._session_factory.create() as session:
+                        build_repositories(session).outbox.mark_failed(
+                            event.id, str(exc), available_at
+                        )
+                        SqlUnitOfWork(session).commit()
             processed += 1
         return processed
 
@@ -338,7 +425,13 @@ class OutboxWorker:
             try:
                 await self.run_once()
             except Exception:
-                logger.exception("Outbox worker loop failed")
+                logger.exception(
+                    "Outbox worker loop failed",
+                    extra={
+                        "event": "outbox.worker.loop_failed",
+                        "operation": "outbox_worker",
+                    },
+                )
             await asyncio.sleep(poll_interval)
 
 

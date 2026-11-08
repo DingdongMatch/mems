@@ -15,7 +15,7 @@ _client: Optional[AsyncOpenAI] = None
 
 
 def get_llm_client() -> AsyncOpenAI:
-    """Create and cache the shared async LLM client."""
+    """Create and cache the shared async OpenAI-compatible client."""
     global _client
     if _client is None:
         if not settings.OPENAI_API_KEY:
@@ -44,13 +44,25 @@ async def chat(
     }
     if json_mode:
         request_kwargs["response_format"] = {"type": "json_object"}
-
-    response = await client.chat.completions.create(**request_kwargs)
+    try:
+        response = await client.chat.completions.create(**request_kwargs)
+    except Exception as exc:
+        logger.error(
+            "LLM request failed",
+            exc_info=True,
+            extra={
+                "event": "llm.request.failed",
+                "model": model,
+                "error_type": type(exc).__name__,
+                "result": "failed",
+            },
+        )
+        raise
     return response.choices[0].message.content or ""
 
 
 class OpenAILLMClient:
-    """Port adapter exposing a ``chat`` method."""
+    """LLMPort adapter exposing a ``chat`` method."""
 
     async def chat(
         self,

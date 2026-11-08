@@ -16,7 +16,7 @@ def episodic_from_orm(row: orm.MemsL1Episodic) -> EpisodicMemory:
         user_id=row.user_id,
         agent_id=row.agent_id,
         session_id=row.session_id,
-        scope=row.scope,
+        namespace=row.namespace,
         content=row.content,
         messages=list(row.messages_json or []),
         vector_id=row.vector_id,
@@ -38,7 +38,7 @@ def episodic_to_orm(
     row.user_id = memory.user_id
     row.agent_id = memory.agent_id
     row.session_id = memory.session_id
-    row.scope = memory.scope
+    row.namespace = memory.namespace
     row.content = memory.content
     row.messages_json = list(memory.messages)
     row.vector_id = memory.vector_id
@@ -59,7 +59,7 @@ def profile_from_orm(row: orm.MemsL2ProfileItem) -> Profile:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         category=row.category,
         key=row.key,
         value=row.value,
@@ -77,7 +77,7 @@ def profile_to_orm(profile: Profile, row: orm.MemsL2ProfileItem) -> orm.MemsL2Pr
     row.tenant_id = profile.tenant_id
     row.user_id = profile.user_id
     row.agent_id = profile.agent_id
-    row.scope = profile.scope
+    row.namespace = profile.namespace
     row.category = profile.category
     row.key = profile.key
     row.value = profile.value
@@ -97,7 +97,7 @@ def fact_from_orm(row: orm.MemsL2Fact) -> Fact:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         subject=row.subject,
         predicate=row.predicate,
         object=row.object,
@@ -116,7 +116,7 @@ def fact_to_orm(fact: Fact, row: orm.MemsL2Fact) -> orm.MemsL2Fact:
     row.tenant_id = fact.tenant_id
     row.user_id = fact.user_id
     row.agent_id = fact.agent_id
-    row.scope = fact.scope
+    row.namespace = fact.namespace
     row.subject = fact.subject
     row.predicate = fact.predicate
     row.object = fact.object
@@ -137,7 +137,7 @@ def event_from_orm(row: orm.MemsL2Event) -> Event:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         subject=row.subject,
         action=row.action,
         object=row.object,
@@ -152,7 +152,7 @@ def event_to_orm(event: Event, row: orm.MemsL2Event) -> orm.MemsL2Event:
     row.tenant_id = event.tenant_id
     row.user_id = event.user_id
     row.agent_id = event.agent_id
-    row.scope = event.scope
+    row.namespace = event.namespace
     row.subject = event.subject
     row.action = event.action
     row.object = event.object
@@ -169,7 +169,7 @@ def summary_from_orm(row: orm.MemsL2Summary) -> Summary:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         summary_type=row.summary_type,
         content=row.content,
         vector_id=row.vector_id,
@@ -186,7 +186,7 @@ def summary_to_orm(summary: Summary, row: orm.MemsL2Summary) -> orm.MemsL2Summar
     row.tenant_id = summary.tenant_id
     row.user_id = summary.user_id
     row.agent_id = summary.agent_id
-    row.scope = summary.scope
+    row.namespace = summary.namespace
     row.summary_type = summary.summary_type
     row.content = summary.content
     row.vector_id = summary.vector_id
@@ -205,7 +205,7 @@ def conflict_from_orm(row: orm.MemsL2ConflictLog) -> ConflictLog:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         memory_type=row.memory_type,
         old_value=row.old_value,
         new_value=row.new_value,
@@ -222,7 +222,7 @@ def conflict_to_orm(
     row.tenant_id = conflict.tenant_id
     row.user_id = conflict.user_id
     row.agent_id = conflict.agent_id
-    row.scope = conflict.scope
+    row.namespace = conflict.namespace
     row.memory_type = conflict.memory_type
     row.old_value = conflict.old_value
     row.new_value = conflict.new_value
@@ -239,7 +239,7 @@ def archive_from_orm(row: orm.MemsL3Archive) -> ArchiveBatch:
         tenant_id=row.tenant_id,
         user_id=row.user_id,
         agent_id=row.agent_id,
-        scope=row.scope,
+        namespace=row.namespace,
         time_period=row.time_period,
         summary_text=row.summary_text,
         file_path=row.file_path,
@@ -254,7 +254,7 @@ def archive_to_orm(
     row.tenant_id = batch.tenant_id
     row.user_id = batch.user_id
     row.agent_id = batch.agent_id
-    row.scope = batch.scope
+    row.namespace = batch.namespace
     row.time_period = batch.time_period
     row.summary_text = batch.summary_text
     row.file_path = batch.file_path

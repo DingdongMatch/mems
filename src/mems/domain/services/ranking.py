@@ -25,7 +25,6 @@ class ScoredMemory(BaseModel):
     session_id: Optional[str] = None
     tenant_id: Optional[str] = None
     user_id: Optional[str] = None
-    scope: Optional[str] = None
 
 
 INTENT_KEYWORDS = {

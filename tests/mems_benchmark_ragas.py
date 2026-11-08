@@ -19,6 +19,7 @@ from openai import AsyncOpenAI, OpenAI
 from sqlmodel import Session, select
 
 from mems.config import settings
+from mems.domain.identity import MemoryNamespace
 from mems.infrastructure.persistence.database import engine
 from mems.infrastructure.persistence.models import (
     MemsL1Episodic,
@@ -203,7 +204,7 @@ class BenchmarkCase:
     scenario_type: str
     language: str
     user_id: str
-    scope: str
+    namespace: str
     background_turns: list[dict[str, str]]
     recent_turns: list[dict[str, str]]
     query: str
@@ -215,13 +216,17 @@ class BenchmarkCase:
     excluded_hint: str = ""
 
 
+def _namespace_path(value: str) -> list[str]:
+    return ["benchmarks", value]
+
+
 def _make_case(
     *,
     case_id: str,
     scenario_type: str,
     language: str,
     user_id: str,
-    scope: str,
+    namespace: str,
     background_turns: list[dict[str, str]],
     recent_turns: list[dict[str, str]],
     query: str,
@@ -235,7 +240,7 @@ def _make_case(
         scenario_type=scenario_type,
         language=language,
         user_id=user_id,
-        scope=scope,
+        namespace=namespace,
         background_turns=background_turns,
         recent_turns=recent_turns,
         query=query,
@@ -323,7 +328,7 @@ def _build_cross_layer_trace_cases() -> list[BenchmarkCase]:
                     scenario_type="cross_layer_trace",
                     language="zh",
                     user_id=f"trace_zh_user_{slug}",
-                    scope="trace_zh",
+                    namespace="trace_zh",
                     background_turns=[
                         {
                             "role": "user",
@@ -354,7 +359,7 @@ def _build_cross_layer_trace_cases() -> list[BenchmarkCase]:
                     scenario_type="cross_layer_trace",
                     language="en",
                     user_id=f"trace_en_user_{slug}",
-                    scope="trace_en",
+                    namespace="trace_en",
                     background_turns=[
                         {
                             "role": "user",
@@ -450,7 +455,7 @@ def _build_recency_conflict_cases() -> list[BenchmarkCase]:
                     scenario_type="recency_conflict",
                     language="zh",
                     user_id=f"conflict_zh_user_{slug}",
-                    scope="conflict_zh",
+                    namespace="conflict_zh",
                     background_turns=[
                         {"role": "user", "content": "我之前住在北京。"},
                         {
@@ -476,7 +481,7 @@ def _build_recency_conflict_cases() -> list[BenchmarkCase]:
                     scenario_type="recency_conflict",
                     language="en",
                     user_id=f"conflict_en_user_{slug}",
-                    scope="conflict_en",
+                    namespace="conflict_en",
                     background_turns=[
                         {"role": "user", "content": "I used to live in Beijing."},
                         {
@@ -557,7 +562,7 @@ def _build_implicit_preference_cases() -> list[BenchmarkCase]:
                     scenario_type="implicit_preference",
                     language="zh",
                     user_id=f"implicit_zh_user_{slug}",
-                    scope="implicit_zh",
+                    namespace="implicit_zh",
                     background_turns=[
                         {"role": "user", "content": obs_zh[0]},
                         {"role": "assistant", "content": "收到，我记下来了。"},
@@ -579,7 +584,7 @@ def _build_implicit_preference_cases() -> list[BenchmarkCase]:
                     scenario_type="implicit_preference",
                     language="en",
                     user_id=f"implicit_en_user_{slug}",
-                    scope="implicit_en",
+                    namespace="implicit_en",
                     background_turns=[
                         {"role": "user", "content": obs_en[0]},
                         {"role": "assistant", "content": "Got it. I noted that down."},
@@ -648,7 +653,7 @@ def _build_needle_in_haystack_cases() -> list[BenchmarkCase]:
                     scenario_type="needle_in_haystack",
                     language="zh",
                     user_id=f"needle_zh_user_{slug}",
-                    scope="needle_zh",
+                    namespace="needle_zh",
                     background_turns=[
                         {"role": "user", "content": content}
                         for content in noise_zh[:10]
@@ -670,7 +675,7 @@ def _build_needle_in_haystack_cases() -> list[BenchmarkCase]:
                     scenario_type="needle_in_haystack",
                     language="en",
                     user_id=f"needle_en_user_{slug}",
-                    scope="needle_en",
+                    namespace="needle_en",
                     background_turns=[
                         {"role": "user", "content": content}
                         for content in noise_en[:10]
@@ -712,7 +717,7 @@ def _build_l0_recall_cases() -> list[BenchmarkCase]:
             scenario_type="l0_recall",
             language="en",
             user_id="l0_user_a",
-            scope="l0",
+            namespace="l0",
             background_turns=[],
             recent_turns=[
                 {
@@ -737,7 +742,7 @@ def _build_archive_exclusion_cases() -> list[BenchmarkCase]:
             scenario_type="archive_exclusion",
             language="en",
             user_id="archive_user_a",
-            scope="archive",
+            namespace="archive",
             background_turns=[
                 {
                     "role": "user",
@@ -761,7 +766,7 @@ def _build_identity_isolation_cases() -> list[BenchmarkCase]:
             scenario_type="identity_isolation",
             language="en",
             user_id="isolation_user_a",
-            scope="isolation",
+            namespace="isolation",
             background_turns=[
                 {"role": "user", "content": "I love hiking on weekends."},
             ],
@@ -782,7 +787,7 @@ def _build_redistill_upgrade_cases() -> list[BenchmarkCase]:
             scenario_type="redistill_upgrade",
             language="en",
             user_id="redistill_user_a",
-            scope="redistill",
+            namespace="redistill",
             background_turns=[
                 {
                     "role": "user",
@@ -806,7 +811,7 @@ def _build_l0_pipeline_cases() -> list[BenchmarkCase]:
             scenario_type="l0_pipeline_consume",
             language="en",
             user_id="pipeline_user_a",
-            scope="pipeline",
+            namespace="pipeline",
             background_turns=[],
             recent_turns=[
                 {"role": "user", "content": "Stream event marker 42"},
@@ -869,7 +874,7 @@ async def wait_for_benchmark_dependencies(
         "agent_id": "benchmark_warmup_agent",
         "session_id": "benchmark_warmup_session",
         "user_id": "benchmark_warmup_user",
-        "scope": "benchmark_warmup",
+        "namespace": "benchmark_warmup",
     }
     deadline = time.perf_counter() + timeout_seconds
     last_error = "dependency warm-up did not start"
@@ -902,8 +907,8 @@ async def wait_for_benchmark_dependencies(
                 f"{base_url}/v1/mems/write",
                 {
                     **warmup_identity,
+                    "namespace": _namespace_path(warmup_identity["namespace"]),
                     "messages": [{"role": "user", "content": "benchmark warmup"}],
-                    "metadata": {"benchmark_warmup": True},
                 },
             )
             await post_json(
@@ -912,7 +917,7 @@ async def wait_for_benchmark_dependencies(
                 {
                     "agent_id": warmup_identity["agent_id"],
                     "user_id": warmup_identity["user_id"],
-                    "scope": warmup_identity["scope"],
+                    "namespace": _namespace_path(warmup_identity["namespace"]),
                     "query": "benchmark warmup",
                     "top_k": 1,
                 },
@@ -932,7 +937,7 @@ async def cleanup_agent_data(
     agent_id: str,
     session_id: str,
     user_id: str,
-    scope: str,
+    namespace: str,
 ) -> None:
     """Best-effort removal of one agent's benchmark data from local storage.
 
@@ -943,7 +948,12 @@ async def cleanup_agent_data(
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            scope=scope,
+            namespace=MemoryNamespace.build(
+                tenant_id=None,
+                user_id=user_id,
+                agent_id=agent_id,
+                path=tuple(_namespace_path(namespace)),
+            ).key,
         )
     except Exception:
         pass
@@ -1495,7 +1505,7 @@ async def _run_hygiene_case(
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "messages": case.recent_turns,
                 },
             )
@@ -1505,7 +1515,7 @@ async def _run_hygiene_case(
                 {
                     "user_id": case.user_id,
                     "agent_id": agent_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "query": case.query,
                     "top_k": top_k,
                 },
@@ -1520,7 +1530,7 @@ async def _run_hygiene_case(
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "messages": case.background_turns,
                 },
             )
@@ -1535,7 +1545,7 @@ async def _run_hygiene_case(
                 {
                     "user_id": case.user_id,
                     "agent_id": agent_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "query": case.query,
                     "top_k": top_k,
                 },
@@ -1554,7 +1564,7 @@ async def _run_hygiene_case(
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "messages": case.background_turns,
                 },
             )
@@ -1569,7 +1579,7 @@ async def _run_hygiene_case(
                 {
                     "user_id": other_user,
                     "agent_id": agent_id,
-                    "scope": case.scope,
+                    "namespace": _namespace_path(case.namespace),
                     "query": case.query,
                     "top_k": top_k,
                 },
@@ -1604,7 +1614,7 @@ async def _run_hygiene_case(
     except Exception as exc:
         return _fail_result(case, trial, exc, started)
     finally:
-        await cleanup_agent_data(agent_id, session_id, case.user_id, case.scope)
+        await cleanup_agent_data(agent_id, session_id, case.user_id, case.namespace)
 
 
 async def _run_redistill_case(
@@ -1628,7 +1638,7 @@ async def _run_redistill_case(
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "messages": case.background_turns,
             },
         )
@@ -1644,7 +1654,7 @@ async def _run_redistill_case(
             {
                 "user_id": case.user_id,
                 "agent_id": agent_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "query": case.query,
                 "top_k": top_k,
             },
@@ -1679,7 +1689,7 @@ async def _run_redistill_case(
     except Exception as exc:
         return _fail_result(case, trial, exc, started)
     finally:
-        await cleanup_agent_data(agent_id, session_id, case.user_id, case.scope)
+        await cleanup_agent_data(agent_id, session_id, case.user_id, case.namespace)
 
 
 async def _run_l0_pipeline_case(
@@ -1719,7 +1729,7 @@ async def _run_l0_pipeline_case(
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "messages": case.recent_turns,
             },
         )
@@ -1754,7 +1764,7 @@ async def _run_l0_pipeline_case(
     except Exception as exc:
         return _fail_result(case, trial, exc, started)
     finally:
-        await cleanup_agent_data(agent_id, session_id, case.user_id, case.scope)
+        await cleanup_agent_data(agent_id, session_id, case.user_id, case.namespace)
 
 
 async def run_case(
@@ -1804,7 +1814,7 @@ async def run_case(
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "messages": case.background_turns,
             },
         )
@@ -1818,7 +1828,7 @@ async def run_case(
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "messages": case.recent_turns,
             },
         )
@@ -1828,7 +1838,7 @@ async def run_case(
             {
                 "user_id": case.user_id,
                 "agent_id": agent_id,
-                "scope": case.scope,
+                "namespace": _namespace_path(case.namespace),
                 "query": case.query,
                 "top_k": top_k,
             },
@@ -1891,7 +1901,7 @@ async def run_case(
     except Exception as exc:
         return _fail_result(case, trial, exc, started)
     finally:
-        await cleanup_agent_data(agent_id, session_id, case.user_id, case.scope)
+        await cleanup_agent_data(agent_id, session_id, case.user_id, case.namespace)
 
     result["end_to_end_ms"] = (time.perf_counter() - started) * 1000
     return result

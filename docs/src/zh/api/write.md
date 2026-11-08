@@ -9,9 +9,7 @@
 | Content-Type | `application/json` |
 | 默认 Base URL | `http://localhost:8210` |
 
-把一条记忆写入 Mems：同步写 L0 热缓存，并在同一事务内持久化 L1 情景主记录、
-enqueue 向量同步与蒸馏触发事件。Mems 只接收「记忆内容」与身份字段，不接收
-运行时状态（会话上下文、任务目标、活动计划等由调用方管理）。
+把一条记忆写入 Mems：同步写 L0 热缓存，并在同一事务内持久化 L1 情景主记录、enqueue 向量同步与蒸馏触发事件。Mems 只接收「记忆内容」与身份字段，不接收运行时状态（会话上下文、任务目标、活动计划等由调用方管理）。
 
 ## 请求参数
 
@@ -25,7 +23,7 @@ enqueue 向量同步与蒸馏触发事件。Mems 只接收「记忆内容」与�
 | `tenant_id` | string | 否 | `null` | — | 租户硬边界 |
 | `user_id` | string | 否 | `null` | — | 用户硬边界；多用户场景建议显式传入 |
 | `session_id` | string | 否 | `null` | — | 动作溯源（不作为隔离边界） |
-| `scope` | string | 否 | `null` | — | 软可见性标签 |
+| `namespace` | string[] | 否 | `[]` | 最多 16 段，每段非空且不超过 128 字符 | 通用业务上下文分区 |
 | `ttl_seconds` | number | 否 | `1800` | 1-604800 | L0 热快照 TTL（秒）；L1 主记录不受此值影响 |
 | `importance_score` | number | 否 | `0.5` | 0-1 | 重要度，用于蒸馏优先级 |
 
@@ -56,7 +54,6 @@ enqueue 向量同步与蒸馏触发事件。Mems 只接收「记忆内容」与�
   "user_id": "user-001",
   "agent_id": "agent-001",
   "session_id": "session-007",
-  "scope": "private",
   "content": "用户喜欢 Rust 并偏好简洁回答。",
   "messages": [
     {"role": "user", "content": "记住我喜欢 Rust。"},
@@ -75,7 +72,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-001",
     "agent_id": "agent-001",
     "session_id": "session-007",
-    "scope": "private",
     "content": "用户喜欢 Rust 并偏好简洁回答。",
     "importance_score": 0.8
   }'
@@ -92,7 +88,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
   "user_id": "user-001",
   "agent_id": "agent-001",
   "session_id": "session-007",
-  "scope": "private",
   "importance_score": 0.8,
   "content": "用户喜欢 Rust 并偏好简洁回答。",
   "messages": [
@@ -111,7 +106,8 @@ curl -X POST http://localhost:8210/v1/mems/write \
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `success` | boolean | 请求是否处理成功 |
-| `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope` | string \| null | 回显身份字段 |
+| `tenant_id` / `user_id` / `agent_id` / `session_id` | string \| null | 回显身份字段 |
+| `namespace` | string[] | 服务回显的调用方 namespace 路径 |
 | `importance_score` | number | 回显重要度 |
 | `content` | string | 实际写入的记忆文本（content 或由 messages 折叠生成） |
 | `messages` | array | 本次请求携带的结构化消息（不是合并后的完整缓冲区） |
@@ -121,6 +117,11 @@ curl -X POST http://localhost:8210/v1/mems/write \
 | `message` | string | 人类可读的结果说明 |
 
 ## 写入后的行为
+
+API 接受可选的 `namespace` 路径段，例如 `["projects", "prj_abc123"]`。
+Mems 将路径段与经过验证的 identity 组合，生成不可变的内部
+`MemoryNamespace`；客户端不传完整内部值。
+调用方应用应先授权项目，再传入稳定的项目标识。省略该字段时使用该 identity 的默认分区。
 
 ### 1. L0 热快照
 

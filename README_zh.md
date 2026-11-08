@@ -20,7 +20,7 @@ Mems 是一套定位工业级的 AI Agent 记忆基础设施。它通过四层�
   - **🧠 异步知识蒸馏 (L2)**：自动化 LLM 流水线，从 L1 原始叙事中提炼**稳定的语义事实**，实现从“经历”到“认知”的进化。
   - **🔍 证据溯源 (Grounding)**：L2 提炼结果强关联 L1 原始语料，拒绝黑盒知识，确保 Agent 每一个推论都有据可查。
   - **📜 跨世纪归档 (L3)**：采用 **Text-First** 策略，将超长期记忆转化为 JSONL 持久化文件，对抗硬件更迭与格式淘汰。
-  - **🛡️ 生产级隔离**：内建多租户（Tenant/User/Agent/Session）权限模型，完美适配 SaaS 与企业级 Agent 部署。
+  - **🛡️ 一致的记忆分区**：Tenant/User/Agent identity 与调用方可选传入的 namespace 路径在各存储适配器中保持一致；业务授权由调用方应用负责。
   - **🔌 原子化接入**：极致精简的 API 设计，只需 `Context -> Query -> Write` 三步即可完成 Agent 记忆赋能。
 
 ## 架构快照
@@ -87,7 +87,6 @@ curl -X POST http://localhost:8210/v1/mems/write \
     "user_id": "user-42",
     "agent_id": "demo-agent",
     "session_id": "demo-session",
-    "scope": "private",
     "messages": [
       {"role": "user", "content": "记住我喜欢 Rust"},
       {"role": "assistant", "content": "收到。"}
@@ -102,7 +101,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "acme",
     "user_id": "user-42",
     "agent_id": "demo-agent",
-    "scope": "private",
     "query": "我喜欢什么？"
   }'
 ```
@@ -136,8 +134,6 @@ Mems 的亮点：**归档不是终点**。当底层大模型变得更强时，�
 
 ```bash
 curl -X POST http://localhost:8210/v1/mems/redistill
-# 或
-uv run python -m mems.redistill --agent demo-agent
 ```
 
 归档 JSONL 完整保留原始记忆：再蒸馏从 L3 读取，用当前 `OPENAI_MODEL` 重新执行

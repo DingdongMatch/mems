@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import timedelta
@@ -42,12 +43,12 @@ class ArchiveApplicationService:
         agent_id: str,
         tenant_id: Optional[str] = None,
         user_id: Optional[str] = None,
-        scope: Optional[str] = None,
+        namespace: Optional[str] = None,
         days: int = 30,
     ) -> ArchiveResponse:
         cutoff_date = self._clock.now() - timedelta(days=days)
         l1_records = self._episodic.list_expired(
-            agent_id, tenant_id, user_id, scope, cutoff_date
+            agent_id, tenant_id, user_id, namespace, cutoff_date
         )
 
         if not l1_records:
@@ -63,11 +64,12 @@ class ArchiveApplicationService:
 
         time_period = f"{self._clock.now().strftime('%Y_%m')}_Monthly"
         batch_id = self._clock.now().strftime("%Y%m%dT%H%M%S%f")
-        scope_suffix = scope or "default"
-        user_suffix = user_id or "all_users"
-        tenant_suffix = tenant_id or "default"
+        namespace_suffix = hashlib.sha256((namespace or "default").encode()).hexdigest()[:12]
+        user_suffix = hashlib.sha256((user_id or "all_users").encode()).hexdigest()[:12]
+        tenant_suffix = hashlib.sha256((tenant_id or "default").encode()).hexdigest()[:12]
+        agent_suffix = hashlib.sha256(agent_id.encode()).hexdigest()[:12]
         filename = (
-            f"l3_{agent_id}_{tenant_suffix}_{user_suffix}_{scope_suffix}_"
+            f"l3_{agent_suffix}_{tenant_suffix}_{user_suffix}_{namespace_suffix}_"
             f"{time_period}_{batch_id}.jsonl"
         )
         filepath = archive_dir / filename
@@ -82,7 +84,7 @@ class ArchiveApplicationService:
                     "user_id": l1_record.user_id,
                     "agent_id": l1_record.agent_id,
                     "session_id": l1_record.session_id,
-                    "scope": l1_record.scope,
+                    "namespace": l1_record.namespace,
                     "content": l1_record.content,
                     "importance_score": l1_record.importance_score,
                     "is_distilled": l1_record.is_distilled,
@@ -113,7 +115,7 @@ class ArchiveApplicationService:
                 tenant_id=tenant_id,
                 user_id=user_id,
                 agent_id=agent_id,
-                scope=scope,
+                namespace=namespace,
                 time_period=time_period,
                 summary_text=summary,
                 file_path=str(filepath),

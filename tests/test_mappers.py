@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from mems.domain.knowledge import Fact, Profile
+from mems.domain.identity import MemoryNamespace
 from mems.domain.memory import EpisodicMemory
 from mems.infrastructure.persistence import models as orm
 from mems.infrastructure.persistence.mappers import (
@@ -22,7 +23,9 @@ def test_episodic_mapper_round_trip():
         user_id="u",
         agent_id="a",
         session_id="s",
-        scope="p",
+        namespace=MemoryNamespace.build(
+            tenant_id="t", user_id="u", agent_id="a", path=("p",)
+        ).key,
         content="content",
         messages=[{"role": "user", "content": "hello"}],
         vector_id="v",
@@ -43,7 +46,9 @@ def test_profile_and_fact_mappers_round_trip():
         tenant_id="t",
         user_id="u",
         agent_id="a",
-        scope="p",
+        namespace=MemoryNamespace.build(
+            tenant_id="t", user_id="u", agent_id="a", path=("p",)
+        ).key,
         category="like",
         key="tech",
         value="Python",
@@ -59,7 +64,9 @@ def test_profile_and_fact_mappers_round_trip():
         tenant_id="t",
         user_id="u",
         agent_id="a",
-        scope="p",
+        namespace=MemoryNamespace.build(
+            tenant_id="t", user_id="u", agent_id="a", path=("p",)
+        ).key,
         subject="用户",
         predicate="喜欢",
         object="Rust",

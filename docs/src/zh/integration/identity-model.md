@@ -1,103 +1,88 @@
-# Identity Model
+# Identity 与 Namespace 模型
 
-Mems 使用平级字符串字段描述记忆的归属与可见性，不预设业务层级、不内置账号
-体系。以下字段在 `/v1/mems/write` 与 `/v1/mems/query` 两侧同时使用。
+Mems 使用请求中的 identity 字段确定记忆归属边界。API 接受可选的通用
+`namespace` 路径（`string[]`），用于表达调用方的业务上下文，例如
+`["projects", "prj_abc123"]`。Mems 将经过验证的 identity 与这些路径段组合，生成
+不可变的内部 `MemoryNamespace`；调用方不传完整内部值。
 
-## 字段总览
+Namespace 是存储分区标识，用于让不同适配器采用一致的命名规则；业务授权仍由
+调用方应用负责。应用需要认证调用者并判断其可使用的 identity，Mems 再将该
+identity 一致地应用到 SQL、Redis 和 Qdrant 操作中。
 
-| 字段 | 类型 | 角色 | 边界类型 |
-| --- | --- | --- | --- |
-| `tenant_id` | string | 租户 / 组织 | 硬边界（可选，给出即过滤） |
-| `user_id` | string | 用户 | 硬边界（可选，给出即过滤） |
-| `agent_id` | string | Agent | 硬边界（必填） |
-| `scope` | string | 业务自定义可见性标签 | 软标签（可选，给出即过滤） |
-| `session_id` | string | 写入侧动作溯源 | 不是隔离边界（query 不接受） |
+## Identity 字段
 
-硬边界与软标签的差异：
+| 字段 | 类型 | 角色 |
+| --- | --- | --- |
+| `tenant_id` | string 或 null | 租户 / 组织边界 |
+| `user_id` | string 或 null | 用户边界 |
+| `agent_id` | string | Agent 边界，必填 |
+| `session_id` | string 或 null | 写入侧溯源，不作为召回边界 |
 
-```text
-tenant_id / user_id / agent_id
-    ↓
-硬隔离：决定“能访问哪些记忆”
+`tenant_id`、`user_id`、`agent_id` 是身份维度。多用户部署中，调用方应用应从可信
+的认证与授权上下文生成这些字段，不应直接信任客户端任意提交的值。可选 identity
+字段缺省时会进入独立的空值身份分区，不会作为通配符，也不代表授权。
 
-scope
-    ↓
-软可见性：在身份范围内进一步收窄（private / shared / team:* ...）
-```
+## MemoryNamespace
 
-## 过滤语义（重要）
-
-当前实现的过滤是「相等过滤」：
+`MemoryNamespace` 是 Mems 根据经过验证的 identity 和可选请求 `namespace` 路径段
+生成的不可变值对象，规范路径带版本号：
 
 ```text
-字段给出 → 只返回该字段等于该值的记忆
-字段省略 → 不按该维度过滤
+("v1", "tenant", <tenant_id>, "user", <user_id>, "agent", <agent_id>, "memories")
 ```
 
-因此：
+请求 `namespace` 是不透明路径段列表，不是完整存储 namespace，也不代表权限。省略或
+传空列表时使用该 identity 的默认分区，不会自动搜索子 namespace。写入与查询需传入
+相同路径。实现必须让可选 identity 的缺省值与
+真实值可区分，并避免路径段序列化歧义。记忆类型、时间、重要度和证据链继续作为记录
+属性，便于一次召回跨类型检索。
 
-- 只传 `agent_id` 的 Query 会看到该 agent 名下所有 tenant/user/scope 的记忆；
-- scope 只能在已给出的身份字段范围内收窄，不能扩大可见范围；
-- `agent_id` 是唯一必填维度，但多用户场景**不能**只靠它隔离。
+例如，调用方可以传 `["projects", "prj_abc123"]`；应使用稳定标识，而非可能变化的
+展示名称。Mems 不为这些路径段赋予产品语义，也不增加 `project_id` 等专用字段。
 
-推荐的多用户组合：
+值对象应使用不可变的 tuple 保存路径段，例如：
 
-```json
-{
-  "tenant_id": "tenant-001",
-  "user_id": "user-42",
-  "agent_id": "support-agent",
-  "scope": "private"
-}
+```python
+class MemoryNamespace(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    segments: tuple[str, ...]
 ```
 
-write 与 query 必须使用一致的身份：写入时漏传 `user_id`，查询时再带
-`user_id`，将无法召回该条记忆；反过来，两侧都漏传则可能互相看到对方数据。
+长期记忆 namespace 不包含 `session_id`，因此可以跨会话召回。L0 可将
+`session_id` 加入按会话组织的缓存键。
 
-## session_id 的定位
+## 授权与共享记忆
 
-- `POST /v1/mems/write` 接受 `session_id`，用于回答「这条记忆来自哪次会话」；
-- L0 快照按 `(identity + session_id)` 组织，同一会话的写入会合并；
-- L1 主记录持久化 `session_id`；
-- `POST /v1/mems/query` **不接受** `session_id`，它不能作为召回过滤器或隔离
-  边界；
-- query 响应中 L0/L1 结果会携带 `session_id`，L2 蒸馏知识不依赖它。
+Mems 不定义应用角色、团队成员关系或 ACL 规则。访问个人记忆时，调用方应用负责
+授权用户并传入对应 identity。访问团队或应用共享记忆时，调用方先授权该共享空间，
+再传入代表该空间所有者的 identity。自由格式的可见性标签本身不构成授权检查。
 
-## 推荐用法
-
-| 场景 | 建议 |
-| --- | --- |
-| 单用户本地 Agent | 固定一个 `user_id`（如 `local-user`），`tenant_id` 留空，`scope="private"` |
-| 多用户 SaaS | 每次请求显式传 `tenant_id` + `user_id` |
-| 多 Agent 系统 | 不同 Agent 用不同 `agent_id`；user 隔离仍按需传 `user_id` |
-| 共享 / 团队空间 | 用 `scope` 表达 `private`、`shared`、`team:*`，配合身份边界使用 |
-
-命名约定建议：
-
-- `tenant_id`：企业/组织稳定 id（如 `acme`、`tenant_001`）；
-- `user_id`：业务用户稳定 id（不要放 PII，如邮箱可直接用作 id 时要谨慎）；
-- `agent_id`：部署在用户侧的 Agent 实例 id；
-- `scope`：小写字符串，推荐 `private` / `shared` / `team:<team-id>` 风格。
+调用方应用必须在传入 namespace 路径前授权对应业务上下文。Mems 将其作为存储分区选择
+器，而不是 ACL。召回按 identity 与 namespace 精确匹配，不隐含通配或前缀检索。项目
+共享记忆还必须使用代表共享所有者的 identity；仅 namespace 相同不会跨越 tenant、user
+或 agent 边界。
 
 ## 与存储层的关系
 
 ```text
-L0（Redis key）   ：mems:l0:{tenant}:{user}:{scope}:{agent}:{session}
-L1（SQL 列）      ：tenant_id / user_id / agent_id / session_id / scope
-L2（SQL 列）      ：tenant_id / user_id / agent_id / scope（无 session_id）
-Qdrant payload    ：与 L1/L2 一致，用于向量过滤
-L3（JSONL 字段）  ：保留完整身份字段
+L0 Redis key   ：namespace + session_id
+L1 SQL         ：tenant_id / user_id / agent_id / session_id + namespace
+L2 SQL         ：tenant_id / user_id / agent_id + namespace
+Qdrant payload ：identity 与 namespace 过滤向量候选
+L3 JSONL       ：原始 identity 字段与归档溯源
 ```
 
-query 时 SQL 与 Qdrant 都按请求中的非空身份字段做相等过滤。
+Identity 列继续保留，用于显式过滤、索引、报表和迁移。`MemoryNamespace` 提供
+统一的规范分区表示；它不替代 identity 字段，也不能单独授予访问权限。
 
 ## 检查清单
 
-- [ ] 所有调用点使用同一套身份字段名；
-- [ ] 多用户服务在 write/query 两端都传 `user_id`；
-- [ ] 测试用例覆盖「只传 agent_id 能看到什么」，确认隔离符合预期；
-- [ ] 不把 `session_id` 当作隔离维度使用；
-- [ ] 使用 `scope` 控制共享与私有空间时，同时保留身份边界。
+- [ ] 所有写入与召回使用从可信应用上下文生成的 identity。
+- [ ] `MemoryNamespace` 由 Mems 根据经过验证的 identity 与 namespace 路径段生成，创建后不可变。
+- [ ] SQL、Redis、Qdrant 使用相同的 namespace 规范。
+- [ ] 可选 identity 维度缺省时的行为已明确且经过审慎设计。
+- [ ] `session_id` 仍只用于溯源，不用于长期召回分区。
+- [ ] 访问共享记忆前由调用方应用完成授权。
 
-更多语义说明见 [Memory Recall Protocol](/zh/introduction/memory-recall-protocol)
+更多内容见 [Memory Recall Protocol](/zh/introduction/memory-recall-protocol)
 与 [接入总览](/zh/integration/overview)。

@@ -32,7 +32,7 @@ L0_PIPELINE_MAXLEN=10000
 | `event_id` | Mems 生成的稳定 id，可用于幂等 |
 | `event_type` | `write`（新建 L0 快照）或 `append`（在缓冲区上追加） |
 | `timestamp` | 发布时间（UTC ISO-8601） |
-| `tenant_id` / `user_id` / `agent_id` / `session_id` / `scope` | 身份上下文；未设置的字段为空字符串 |
+| `tenant_id` / `user_id` / `agent_id` / `session_id` | 身份上下文；未设置的字段为空字符串 |
 | `content` | 本次事件后的 L0 记忆文本快照 |
 | `messages` | JSON 编码的短期缓冲区 |
 | `expires_at` | L0 快照的过期时间（TTL 结束时刻） |

@@ -24,10 +24,13 @@ The request body is JSON:
 | `query` | string | yes | — | non-empty and not blank after trimming | search text used for semantic / lexical retrieval |
 | `tenant_id` | string | no | `null` | — | tenant hard boundary; equality filter when provided |
 | `user_id` | string | no | `null` | — | user hard boundary; pass it explicitly in multi-user scenarios |
-| `scope` | string | no | `null` | — | soft visibility label (e.g. `private` / `shared` / `team:*`); equality filter when provided |
+| `namespace` | string[] | no | `[]` | up to 16 non-empty segments, each at most 128 chars | generic caller context for an exact storage partition |
 | `top_k` | number | no | `5` | 1-100 | maximum number of candidates returned |
 
-The current request does **not** accept the following fields (semantics in the
+Use the same `namespace` path used for writes. It selects one exact partition and
+does not imply wildcard or descendant search. The caller application must
+authorize the business context first. The current request also does **not**
+accept the following fields (semantics in the
 [Memory Recall Protocol](/introduction/memory-recall-protocol)):
 
 - `session_id`: write-side provenance; not a recall filter or isolation field;
@@ -45,7 +48,6 @@ The current request does **not** accept the following fields (semantics in the
   "tenant_id": "tenant-001",
   "user_id": "user-001",
   "agent_id": "agent-001",
-  "scope": "private",
   "query": "What language does the user mainly use?",
   "top_k": 5
 }
@@ -58,7 +60,6 @@ curl -X POST http://localhost:8210/v1/mems/query \
     "tenant_id": "tenant-001",
     "user_id": "user-001",
     "agent_id": "agent-001",
-    "scope": "private",
     "query": "What language does the user mainly use?",
     "top_k": 5
   }'
@@ -79,8 +80,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "source_l1_ids": [102, 231],
       "created_at": "2026-04-01T10:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     },
     {
       "source": "l1_episodic",
@@ -90,8 +90,7 @@ curl -X POST http://localhost:8210/v1/mems/query \
       "session_id": "session-007",
       "created_at": "2026-03-20T08:00:00Z",
       "tenant_id": "tenant-001",
-      "user_id": "user-001",
-      "scope": "private"
+      "user_id": "user-001"
     }
   ],
   "total": 2
@@ -118,7 +117,12 @@ curl -X POST http://localhost:8210/v1/mems/query \
 | `session_id` | string \| null | source session; only L0/L1 results carry a value |
 | `tenant_id` | string \| null | identity context |
 | `user_id` | string \| null | identity context |
-| `scope` | string \| null | visibility context |
+
+The server derives immutable `MemoryNamespace` from validated identity
+plus optional `namespace` path segments. The complete internal namespace is
+never a query parameter. The caller application authorizes both identity and
+business context before making the request; Mems uses them to constrain storage
+queries.
 
 > `id` (stable memory identifier) and `confidence` (trustworthiness component)
 > are MRP target fields and are not returned yet.
@@ -153,8 +157,9 @@ Behavior details:
   final unified ranking truncates to `top_k`;
 - L0 snapshots are stored per session; a recall sees each active session
   snapshot of the agent (returned only when there is lexical overlap);
-- in multi-user scenarios, sending only `agent_id` widens isolation (see
-  [Identity Model](/integration/identity-model)).
+- in multi-user scenarios, pass the intended `user_id` and applicable
+  `tenant_id`; omitted values select a dedicated null partition, not a wildcard
+  (see [Identity Model](/integration/identity-model)).
 
 ### score Composition
 

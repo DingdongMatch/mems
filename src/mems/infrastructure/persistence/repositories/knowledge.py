@@ -31,7 +31,7 @@ class SqlKnowledgeRepository(SqlRepository):
             orm.MemsL2ProfileItem.tenant_id == identity.tenant_id,
             orm.MemsL2ProfileItem.user_id == identity.user_id,
             orm.MemsL2ProfileItem.agent_id == identity.agent_id,
-            orm.MemsL2ProfileItem.scope == identity.scope,
+            orm.MemsL2ProfileItem.namespace == identity.namespace_key,
             orm.MemsL2ProfileItem.status == "active",
         )
         rows = self._session.exec(query).all()
@@ -42,7 +42,7 @@ class SqlKnowledgeRepository(SqlRepository):
             orm.MemsL2Fact.tenant_id == identity.tenant_id,
             orm.MemsL2Fact.user_id == identity.user_id,
             orm.MemsL2Fact.agent_id == identity.agent_id,
-            orm.MemsL2Fact.scope == identity.scope,
+            orm.MemsL2Fact.namespace == identity.namespace_key,
             orm.MemsL2Fact.status == "active",
         )
         rows = self._session.exec(query).all()
@@ -53,7 +53,7 @@ class SqlKnowledgeRepository(SqlRepository):
             orm.MemsL2Summary.tenant_id == identity.tenant_id,
             orm.MemsL2Summary.user_id == identity.user_id,
             orm.MemsL2Summary.agent_id == identity.agent_id,
-            orm.MemsL2Summary.scope == identity.scope,
+            orm.MemsL2Summary.namespace == identity.namespace_key,
         )
         rows = self._session.exec(query).all()
         return [summary_from_orm(row) for row in rows]
@@ -120,7 +120,7 @@ class SqlKnowledgeRepository(SqlRepository):
                 orm.MemsL2ProfileItem.tenant_id == identity.tenant_id,
                 orm.MemsL2ProfileItem.user_id == identity.user_id,
                 orm.MemsL2ProfileItem.agent_id == identity.agent_id,
-                orm.MemsL2ProfileItem.scope == identity.scope,
+                orm.MemsL2ProfileItem.namespace == identity.namespace_key,
                 orm.MemsL2ProfileItem.category == category,
                 orm.MemsL2ProfileItem.key == key,
                 orm.MemsL2ProfileItem.status == "active",
@@ -140,7 +140,7 @@ class SqlKnowledgeRepository(SqlRepository):
                 orm.MemsL2Fact.tenant_id == identity.tenant_id,
                 orm.MemsL2Fact.user_id == identity.user_id,
                 orm.MemsL2Fact.agent_id == identity.agent_id,
-                orm.MemsL2Fact.scope == identity.scope,
+                orm.MemsL2Fact.namespace == identity.namespace_key,
                 orm.MemsL2Fact.subject == subject,
                 orm.MemsL2Fact.predicate == predicate,
                 orm.MemsL2Fact.object == object,
@@ -157,7 +157,7 @@ class SqlKnowledgeRepository(SqlRepository):
                 orm.MemsL2Fact.tenant_id == identity.tenant_id,
                 orm.MemsL2Fact.user_id == identity.user_id,
                 orm.MemsL2Fact.agent_id == identity.agent_id,
-                orm.MemsL2Fact.scope == identity.scope,
+                orm.MemsL2Fact.namespace == identity.namespace_key,
                 orm.MemsL2Fact.subject == subject,
                 orm.MemsL2Fact.predicate == predicate,
                 orm.MemsL2Fact.status == "active",

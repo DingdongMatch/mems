@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from mems.domain.identity import MemoryIdentity
+from mems.domain.identity import MemoryIdentity, MemoryNamespace
 
 
 class WorkingMemory(BaseModel):
@@ -23,7 +23,7 @@ class WorkingMemory(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     content: Optional[str] = None
     short_term_buffer: list[dict[str, str]] = Field(default_factory=list)
     expires_at: datetime
@@ -35,7 +35,9 @@ class WorkingMemory(BaseModel):
             user_id=self.user_id,
             agent_id=self.agent_id,
             session_id=self.session_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
     def is_expired(self, now: datetime) -> bool:
@@ -45,7 +47,7 @@ class WorkingMemory(BaseModel):
         self,
         messages: list[dict[str, str]],
         content: Optional[str],
-        scope: Optional[str],
+        namespace: Optional[str],
         max_buffer_size: int,
     ) -> "WorkingMemory":
         """Merge new messages into this snapshot with a bounded buffer.
@@ -59,7 +61,7 @@ class WorkingMemory(BaseModel):
             update={
                 "short_term_buffer": merged,
                 "content": content if content is not None else self.content,
-                "scope": scope if scope is not None else self.scope,
+                "namespace": namespace if namespace is not None else self.namespace,
             }
         )
 
@@ -69,7 +71,7 @@ class WorkingMemory(BaseModel):
         identity: MemoryIdentity,
         messages: list[dict[str, str]],
         content: Optional[str],
-        scope: Optional[str],
+        namespace: Optional[str],
         expires_at: datetime,
         max_buffer_size: int = 0,
     ) -> "WorkingMemory":
@@ -85,7 +87,7 @@ class WorkingMemory(BaseModel):
             user_id=identity.user_id,
             agent_id=identity.agent_id,
             session_id=identity.session_id,
-            scope=scope if scope is not None else identity.scope,
+            namespace=namespace if namespace is not None else identity.namespace_key,
             content=content,
             short_term_buffer=buffer,
             expires_at=expires_at,
@@ -102,7 +104,7 @@ class EpisodicMemory(BaseModel):
     user_id: Optional[str] = None
     agent_id: str
     session_id: Optional[str] = None
-    scope: Optional[str] = None
+    namespace: Optional[str] = None
     content: str
     messages: list[dict[str, str]] = Field(default_factory=list)
     vector_id: str
@@ -124,7 +126,9 @@ class EpisodicMemory(BaseModel):
             user_id=self.user_id,
             agent_id=self.agent_id,
             session_id=self.session_id,
-            scope=self.scope,
+            memory_namespace=(
+                MemoryNamespace.from_key(self.namespace) if self.namespace else None
+            ),
         )
 
     @classmethod
@@ -141,7 +145,7 @@ class EpisodicMemory(BaseModel):
             user_id=identity.user_id,
             agent_id=identity.agent_id,
             session_id=identity.session_id,
-            scope=identity.scope,
+            namespace=identity.namespace_key,
             content=content,
             messages=messages,
             vector_id=str(uuid4()),
