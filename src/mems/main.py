@@ -94,7 +94,11 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-app.add_middleware(RequestContextMiddleware)
+app.add_middleware(
+    RequestContextMiddleware,
+    log_bodies=settings.LOG_HTTP_BODY_ENABLED,
+    max_body_chars=settings.LOG_HTTP_BODY_MAX_CHARS,
+)
 
 app.include_router(memories.router)
 

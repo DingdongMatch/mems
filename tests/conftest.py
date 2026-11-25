@@ -11,6 +11,7 @@ os.environ.setdefault(
 )
 
 import pytest
+from sqlalchemy.engine import make_url
 from sqlmodel import Session, SQLModel, create_engine
 
 from mems.config import settings
@@ -336,6 +337,12 @@ def test_app(monkeypatch: pytest.MonkeyPatch):
 
     import mems.infrastructure.persistence.models  # noqa: F401
 
+    database_name = make_url(settings.DATABASE_URL).database or ""
+    if not database_name.endswith("_test"):
+        raise RuntimeError(
+            f"Refusing destructive test setup against non-test database {database_name!r}; "
+            "the test database name must end with '_test'."
+        )
     engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
     SQLModel.metadata.drop_all(engine)
     SQLModel.metadata.create_all(engine)

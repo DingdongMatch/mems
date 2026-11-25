@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8210
     LOG_LEVEL: str = "INFO"
+    # HTTP body logging is opt-in because bodies may contain memory content.
+    LOG_HTTP_BODY_ENABLED: bool = False
+    LOG_HTTP_BODY_MAX_CHARS: int = 2000
 
     # Archive
     ARCHIVE_DAYS: int = 30

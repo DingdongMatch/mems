@@ -450,7 +450,10 @@ Mems 不管理会话上下文。推荐时序：
 ## 8. 测试
 
 ```bash
-# 运行测试（不需要外部服务，全 Fake 注入）
+# 启动测试所需的 PostgreSQL（本地开发）
+docker compose up -d postgres
+
+# 运行测试
 uv run pytest
 
 # 代码检查
@@ -463,10 +466,16 @@ uv run mypy src/
 cd docs && npm run build
 ```
 
-测试环境使用 `tests/conftest.py` 中的 Fake store/vector/embedding/LLM，不需要
-运行 Docker 服务。测试默认关闭 Outbox worker（`OUTBOX_WORKER_ENABLED=False`），
-需要验证最终一致时手动 `worker.run_once()` 排空。新增端点时也需要使用
-`Depends` 注入以保证测试覆盖。
+SQL 层测试需要专用 PostgreSQL 数据库，默认连接
+`postgresql+psycopg://mems:***@localhost:5432/mems_test`。本地可通过
+`docker compose up -d postgres` 启动，GitHub Actions 的 Tests workflow 通过
+PostgreSQL service 提供相同环境。Redis、向量库、Embedding 和 LLM 仍使用
+`tests/conftest.py` 中的 Fake 实现，无需启动对应服务。
+
+测试夹具只会对名称以 `_test` 结尾的数据库执行 `drop_all/create_all`；若外部
+`DATABASE_URL` 指向其他数据库，测试会拒绝运行，避免误删开发或生产数据。
+测试默认关闭 Outbox worker（`OUTBOX_WORKER_ENABLED=False`），需要验证最终一致时
+手动 `worker.run_once()` 排空。新增端点时也需要使用 `Depends` 注入以保证测试覆盖。
 
 ---
 
@@ -497,6 +506,8 @@ uvicorn mems.main:app --reload --port 8210
 | `OUTBOX_WORKER_ENABLED` | 是否在 lifespan 内启动进程内 Outbox worker |
 | `WORKER_POLL_SECONDS` | 独立 worker 轮询间隔 |
 | `REDISTILL_BATCH_SIZE` | 每次手动再蒸馏最多处理的 L3 记录数 |
+| `LOG_HTTP_BODY_ENABLED` | 是否记录 HTTP 请求/响应 JSON body（默认关闭，含记忆原文） |
+| `LOG_HTTP_BODY_MAX_CHARS` | 单条 body 日志最大字符数（默认 2000，超出截断） |
 
 ---
 

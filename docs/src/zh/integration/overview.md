@@ -384,10 +384,13 @@ GET /v1/mems/status → 数据库/Redis/Qdrant/调度器健康 + 流水线指标
 
 应用、API 与 worker 统一输出 JSON 日志，`LOG_LEVEL` 控制级别。API 请求会生成
 `request_id` 并放入响应头 `X-Request-ID`；后台任务日志包含 Outbox 事件 ID、类型、
-结果与耗时。日志不记录记忆原文、prompt、密钥或异常消息正文。
+结果与耗时。默认不记录记忆原文、prompt、密钥或异常消息正文。
 
-应用日志不记录 LLM 输入、记忆原文、API 密钥或异常消息正文。蒸馏链路直接使用
-OpenAI SDK，不配置外部 LLM 观测服务。
+设置 `LOG_HTTP_BODY_ENABLED=true` 后会额外记录 HTTP 请求与响应的 JSON body，
+以及 method、path 与查询参数。敏感键（`api_key`、`authorization`、`password`、
+`token`、`secret` 等）替换为 `***`；body 按 `LOG_HTTP_BODY_MAX_CHARS`（默认 2000）
+截断并输出 `*_truncated` 标记。非 JSON 与压缩 body 只记录字节数。默认关闭以保留
+隐私保证。
 
 ## 9. 接入检查清单
 

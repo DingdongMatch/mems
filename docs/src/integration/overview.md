@@ -406,11 +406,14 @@ Container and load-balancer recommendations:
 The API, application, and worker emit JSON logs. `LOG_LEVEL` controls the level.
 API requests get a generated `request_id`, also returned in `X-Request-ID`;
 background job logs include the Outbox event ID, type, result, and duration.
-Logs omit raw memories, prompts, API keys, and exception message text.
+By default logs omit raw memories, prompts, API keys, and exception message text.
 
-LLM inputs, memory text, API keys, and exception message text are not included in
-application logs. The distillation path uses the OpenAI SDK directly; no external
-LLM tracing service is configured.
+Set `LOG_HTTP_BODY_ENABLED=true` to also record HTTP request/response JSON bodies
+along with method, path, and query string. Sensitive keys (`api_key`,
+`authorization`, `password`, `token`, `secret`, and similar) are replaced with
+`***`; bodies are truncated to `LOG_HTTP_BODY_MAX_CHARS` (default 2000) and carry
+a `*_truncated` flag. Non-JSON and compressed bodies are reported as byte counts
+only. Keeping this off preserves the default privacy guarantee.
 
 ## 9. Pre-Launch Checklist
 

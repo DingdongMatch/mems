@@ -325,7 +325,14 @@ def test_write_persists_l1_messages_json(test_app):
         assert l1_record.messages_json[0]["role"] == "user"
         assert "Rust" in l1_record.content
 
-    assert redis_service._store.get((None, None, None, "agent_chat", "session_chat"))
+    namespace = MemoryNamespace.build(
+        tenant_id=None, user_id=None, agent_id="agent_chat"
+    ).key
+    l0 = asyncio.run(
+        redis_service.read("agent_chat", "session_chat", namespace=namespace)
+    )
+    assert l0 is not None
+    assert "Rust" in (l0.content or "")
 
     with Session(engine) as session:
         session_records = session.exec(
