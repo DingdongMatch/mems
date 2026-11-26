@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import logging
 from typing import Any, Protocol
 
 from mems.domain.identity import MemoryIdentity
@@ -27,6 +28,8 @@ from mems.domain.services.ranking import (
     rank_score,
     rank_verified_score,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Retriever(Protocol):
@@ -57,13 +60,25 @@ class L0HotRetriever:
         self._limit = limit
 
     async def retrieve(self, ctx: RecallContext) -> list[ScoredMemory]:
-        snapshots = await self._store.list_active(
-            ctx.identity.agent_id,
-            tenant_id=ctx.identity.tenant_id,
-            user_id=ctx.identity.user_id,
-            namespace=ctx.identity.namespace_key,
-            limit=self._limit,
-        )
+        try:
+            snapshots = await self._store.list_active(
+                ctx.identity.agent_id,
+                tenant_id=ctx.identity.tenant_id,
+                user_id=ctx.identity.user_id,
+                namespace=ctx.identity.namespace_key,
+                limit=self._limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                "L0 unavailable; continuing with durable recall sources",
+                exc_info=True,
+                extra={
+                    "event": "memory.l0_recall.failed",
+                    "error_type": type(exc).__name__,
+                    "result": "degraded",
+                },
+            )
+            return []
         results: list[ScoredMemory] = []
         for l0 in snapshots:
             if not l0.content:

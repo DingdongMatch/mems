@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from typing import Iterator
+
 from sqlmodel import Session, select
 
 from mems.infrastructure.persistence import models as orm
@@ -18,6 +21,12 @@ class SqlUnitOfWork:
 
     def rollback(self) -> None:
         self._session.rollback()
+
+    @contextmanager
+    def begin_nested(self) -> Iterator[None]:
+        """Open a savepoint that is rolled back when its body fails."""
+        with self._session.begin_nested():
+            yield
 
 
 class SqlDatabaseHealthCheck:

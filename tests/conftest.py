@@ -11,6 +11,7 @@ os.environ.setdefault(
 )
 
 import pytest
+from pydantic import SecretStr
 from sqlalchemy.engine import make_url
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -150,6 +151,15 @@ class FakeWorkingMemoryStore:
         self._publish(l0, event_type)
         return l0
 
+    def _read_active(
+        self, key: tuple[str | None, str | None, str | None, str, str | None]
+    ) -> WorkingMemory | None:
+        snapshot = self._store.get(key)
+        if snapshot is not None and snapshot.is_expired(datetime.now(timezone.utc)):
+            self._store.pop(key, None)
+            return None
+        return snapshot
+
     async def read(
         self,
         agent_id: str,
@@ -158,7 +168,7 @@ class FakeWorkingMemoryStore:
         user_id: str | None = None,
         namespace: str | None = None,
     ) -> WorkingMemory | None:
-        return self._store.get((tenant_id, user_id, namespace, agent_id, session_id))
+        return self._read_active((tenant_id, user_id, namespace, agent_id, session_id))
 
     async def list_active(
         self,
@@ -169,14 +179,17 @@ class FakeWorkingMemoryStore:
         limit: int = 10,
     ) -> list[WorkingMemory]:
         snapshots = []
-        for (t, u, s, a, _session), l0 in self._store.items():
+        for (t, u, s, a, _session), l0 in list(self._store.items()):
             if a != agent_id:
                 continue
             if tenant_id is not None and t != tenant_id:
                 continue
             if user_id is not None and u != user_id:
                 continue
-            if namespace is not None and s != namespace:
+            if s != namespace:
+                continue
+            if l0.is_expired(datetime.now(timezone.utc)):
+                self._store.pop((t, u, s, a, _session), None)
                 continue
             snapshots.append(l0)
         snapshots.sort(key=lambda item: item.expires_at, reverse=True)
@@ -190,10 +203,10 @@ class FakeWorkingMemoryStore:
         user_id: str | None = None,
         namespace: str | None = None,
     ) -> bool:
-        return (
-            self._store.pop((tenant_id, user_id, namespace, agent_id, session_id), None)
-            is not None
-        )
+        key = (tenant_id, user_id, namespace, agent_id, session_id)
+        if self._read_active(key) is None:
+            return False
+        return self._store.pop(key, None) is not None
 
     async def append_messages(
         self,
@@ -207,7 +220,8 @@ class FakeWorkingMemoryStore:
         max_buffer_size: int = 10,
         namespace: str | None = None,
     ) -> WorkingMemory:
-        existing = self._store.get((tenant_id, user_id, namespace, agent_id, session_id))
+        key = (tenant_id, user_id, namespace, agent_id, session_id)
+        existing = self._read_active(key)
         if existing is None:
             trimmed = messages[-max_buffer_size:] if max_buffer_size > 0 else messages
             return await self.write(
@@ -222,17 +236,9 @@ class FakeWorkingMemoryStore:
             )
 
         merged = existing.merge_append(messages, content, namespace, max_buffer_size)
-        return await self.write(
-            tenant_id=tenant_id,
-            user_id=user_id,
-            agent_id=agent_id,
-            session_id=session_id,
-            messages=merged.short_term_buffer,
-            content=merged.content,
-            namespace=merged.namespace,
-            ttl_seconds=ttl_seconds,
-            event_type="append",
-        )
+        self._store[key] = merged
+        self._publish(merged, "append")
+        return merged
 
 
 class FakeEmbeddingService:
@@ -305,6 +311,7 @@ class FakeVectorService:
         top_k: int = 5,
         filter_agent_id: str | None = None,
         filters: dict[str, str] | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         collection = self.collections.get(collection_name, {})
         results = []
@@ -317,11 +324,9 @@ class FakeVectorService:
             ):
                 continue
             score = 1.0 / (1.0 + abs(point["vector"][0] - query_vector[0]))
-            if payload.get("memory_type") == "l2_summary":
-                score += 0.1
             results.append({"id": point["id"], "score": score, "payload": payload})
         results.sort(key=lambda item: item["score"], reverse=True)
-        return results[:top_k]
+        return results[offset:offset + top_k]
 
     async def delete_points(self, collection_name: str, point_ids: list[str]) -> bool:
         collection = self.collections.get(collection_name, {})
@@ -332,7 +337,8 @@ class FakeVectorService:
 
 @pytest.fixture
 def test_app(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", SecretStr("test-key"))
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")
     monkeypatch.setattr(settings, "OUTBOX_WORKER_ENABLED", False)
 
     import mems.infrastructure.persistence.models  # noqa: F401

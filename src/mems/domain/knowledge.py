@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
+import json
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -41,9 +43,7 @@ class Profile(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            memory_namespace=(
-                MemoryNamespace.from_key(self.namespace) if self.namespace else None
-            ),
+            memory_namespace=(MemoryNamespace.from_key(self.namespace) if self.namespace else None),
         )
 
 
@@ -75,9 +75,7 @@ class Fact(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            memory_namespace=(
-                MemoryNamespace.from_key(self.namespace) if self.namespace else None
-            ),
+            memory_namespace=(MemoryNamespace.from_key(self.namespace) if self.namespace else None),
         )
 
 
@@ -98,6 +96,27 @@ class Event(BaseModel):
     importance_score: int = 5
     source_l1_ids: list[int] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    semantic_hash: Optional[str] = None
+
+    def compute_semantic_hash(self) -> str:
+        """Hash the canonical identity and normalized event semantics."""
+        payload = {
+            "tenant_id": self.tenant_id,
+            "user_id": self.user_id,
+            "agent_id": self.agent_id,
+            "namespace": self.namespace,
+            "subject": " ".join(self.subject.split()),
+            "action": " ".join(self.action.split()),
+            "object": " ".join(self.object.split()),
+            "time_hint": (" ".join(self.time_hint.split()) if self.time_hint is not None else None),
+        }
+        canonical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class Summary(BaseModel):
@@ -126,9 +145,7 @@ class Summary(BaseModel):
             tenant_id=self.tenant_id,
             user_id=self.user_id,
             agent_id=self.agent_id,
-            memory_namespace=(
-                MemoryNamespace.from_key(self.namespace) if self.namespace else None
-            ),
+            memory_namespace=(MemoryNamespace.from_key(self.namespace) if self.namespace else None),
         )
 
 
@@ -221,9 +238,7 @@ class DistillSource:
             user_id=self.user_id,
             agent_id=self.agent_id,
             session_id=self.session_id,
-            memory_namespace=(
-                MemoryNamespace.from_key(self.namespace) if self.namespace else None
-            ),
+            memory_namespace=(MemoryNamespace.from_key(self.namespace) if self.namespace else None),
         )
 
     @classmethod

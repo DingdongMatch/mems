@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Dict, List, Optional, cast
 
 from openai import AsyncOpenAI
+from pydantic import SecretStr
 
 from mems.config import settings
 
@@ -14,18 +16,37 @@ logger = logging.getLogger(__name__)
 _client: Optional[AsyncOpenAI] = None
 
 
+def _secret_text(value: SecretStr | str) -> str:
+    return value.get_secret_value() if isinstance(value, SecretStr) else value
+
+
 def get_llm_client() -> AsyncOpenAI:
     """Create and cache the shared async OpenAI-compatible client."""
     global _client
+    if settings.LLM_PROVIDER != "openai":
+        raise ValueError("LLM_PROVIDER is disabled")
     if _client is None:
-        if not settings.OPENAI_API_KEY:
+        api_key = _secret_text(settings.OPENAI_API_KEY)
+        if not api_key:
             raise ValueError("OPENAI_API_KEY is not configured")
         _client = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
+            api_key=api_key,
             base_url=settings.OPENAI_BASE_URL,
             timeout=float(settings.OPENAI_TIMEOUT),
         )
     return _client
+
+
+async def close_llm_client() -> None:
+    """Close and reset the shared LLM client; repeated calls are harmless."""
+    global _client
+    client = _client
+    if client is None:
+        return
+    _client = None
+    result = client.close()
+    if inspect.isawaitable(result):
+        await result
 
 
 async def chat(
@@ -72,6 +93,12 @@ class OpenAILLMClient:
         json_mode: bool = False,
     ) -> str:
         return await chat(messages, model, temperature, json_mode)
+
+    async def close(self) -> None:
+        await close_llm_client()
+
+    async def aclose(self) -> None:
+        await self.close()
 
 
 llm_client = OpenAILLMClient()

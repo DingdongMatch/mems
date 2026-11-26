@@ -92,20 +92,21 @@ curl http://localhost:8210/v1/mems/status
 
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
-| `pending_distill` | number | 当前未蒸馏的 L1 记录数 |
-| `pending_archive` | number | 已超过 `ARCHIVE_DAYS`（默认 30 天）仍未归档的 L1 记录数 |
-| `recent_failures` | number | 近期失败数（当前版本恒为 0，预留给 Outbox 失败统计） |
+| `pending_distill` | number \| null | 当前未蒸馏的活跃 L1 记录数；SQL 指标不可用时为 `null` |
+| `pending_archive` | number \| null | 已超过 `ARCHIVE_DAYS`（默认 30 天）仍未归档的 L1 记录数 |
+| `recent_failures` | number \| null | 最近 24 小时进入死信状态的 Outbox 事件数 |
 | `l0_pipeline_enabled` | boolean | L0 记忆输出管道是否开启 |
-| `profile_items` | number | 活跃 L2 Profile 数 |
-| `fact_items` | number | 活跃 L2 Fact 数 |
-| `summary_items` | number | L2 Summary 数 |
-| `conflict_count` | number | 冲突日志总数（`mems_l2_conflict_log`） |
-| `stale_profile_items` | number | 超过 365 天未验证的活跃 Profile 数 |
-| `stale_fact_items` | number | 超过 365 天未验证的活跃 Fact 数 |
-| `stale_summary_items` | number | 超过 365 天未验证的 Summary 数 |
+| `profile_items` | number \| null | 活跃 L2 Profile 数 |
+| `fact_items` | number \| null | 活跃 L2 Fact 数 |
+| `summary_items` | number \| null | L2 Summary 数 |
+| `conflict_count` | number \| null | 冲突日志总数（`mems_l2_conflict_log`） |
+| `stale_profile_items` | number \| null | 超过 365 天未验证的活跃 Profile 数 |
+| `stale_fact_items` | number \| null | 超过 365 天未验证的活跃 Fact 数 |
+| `stale_summary_items` | number \| null | 超过 365 天未验证的 Summary 数 |
 
 注意：
 
+- 数据库不健康时，SQL 派生指标为 `null`，端点仍返回 HTTP 200 和组件检查结果；
 - `pending_archive` 的「过期」指 `created_at < now - ARCHIVE_DAYS`；
 - `stale_*` 的阈值固定为 365 天（`STALE_MEMORY_DAYS`），与验证衰减的排序影响
   对应；

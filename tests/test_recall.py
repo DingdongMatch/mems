@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
+from mems.config import settings
+from mems.domain.identity import MemoryIdentity
 from mems.domain.services.ranking import (
     ScoredMemory,
+    detect_query_intents,
     l1_base,
     l2_entity_base,
     l2_event_base,
@@ -13,6 +19,8 @@ from mems.domain.services.ranking import (
     lexical_overlap,
     sort_results,
 )
+from mems.infrastructure.persistence.models import MemsL2Fact
+from mems.interfaces.api import dependencies
 
 
 def test_lexical_overlap_supports_chinese():
@@ -131,6 +139,155 @@ def test_sort_results_is_deterministic():
     assert sorted_once == sorted_twice
 
 
+def test_sort_results_normalizes_mixed_timezones():
+    """Naive values mean UTC; aware values are compared by their UTC instant."""
+    same_instant_naive = ScoredMemory(
+        source="l1_episodic",
+        content="naive",
+        score=1.0,
+        created_at=datetime(2026, 1, 1, 12, 0),
+    )
+    same_instant_aware = ScoredMemory(
+        source="l2_fact",
+        content="aware",
+        score=1.0,
+        created_at=datetime(
+            2026, 1, 1, 20, 0, tzinfo=timezone(timedelta(hours=8))
+        ),
+    )
+    newest = ScoredMemory(
+        source="l2_event",
+        content="newest",
+        score=1.0,
+        created_at=datetime(
+            2026, 1, 1, 7, 30, tzinfo=timezone(timedelta(hours=-5))
+        ),
+    )
+    assert [
+        item.content
+        for item in sort_results([same_instant_naive, same_instant_aware, newest])
+    ] == ["newest", "naive", "aware"]
+
+
+def test_detect_query_intents_supports_ascii_and_cjk():
+    assert detect_query_intents("What's the latest project progress?") == {
+        "fact",
+        "event",
+    }
+    assert detect_query_intents("最近喜欢什么") == {"profile", "event"}
+    assert detect_query_intents("项目进展") == {"fact", "event"}
+
+
+@pytest.mark.parametrize(
+    "embedding_result", ["error", "empty", "empty_vector", "vector_error"]
+)
+def test_query_degrades_when_vector_pipeline_is_unavailable(
+    test_app, monkeypatch, embedding_result
+):
+    """Embedding/search failures and empty vectors keep L0 and SQL-backed L2."""
+    app, engine, _, vector = test_app
+
+    class UnavailableEmbedding:
+        async def embed(self, texts):
+            if embedding_result == "error":
+                raise RuntimeError("embedding unavailable")
+            if embedding_result == "empty":
+                return []
+            if embedding_result == "empty_vector":
+                return [[]]
+            return [[1.0, 0.1, 1.0]]
+
+    async def get_unavailable_embedding():
+        return UnavailableEmbedding()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/write",
+            json={
+                "agent_id": "agent_degraded",
+                "content": "I like Python",
+                "importance_score": 0.9,
+            },
+        )
+        assert response.status_code == 200
+
+    with Session(engine) as session:
+        session.add(
+            MemsL2Fact(
+                agent_id="agent_degraded",
+                namespace=MemoryIdentity(agent_id="agent_degraded").namespace_key,
+                subject="user",
+                predicate="likes",
+                object="Python",
+                confidence=1.0,
+            )
+        )
+        session.commit()
+
+    async def unexpected_search(*args, **kwargs):
+        if embedding_result == "vector_error":
+            raise RuntimeError("vector search unavailable")
+        raise AssertionError("vector search must not run without a query vector")
+
+    monkeypatch.setattr(vector, "search", unexpected_search)
+    app.dependency_overrides[dependencies.get_embedding_port] = get_unavailable_embedding
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/query",
+            json={"agent_id": "agent_degraded", "query": "Python", "top_k": 10},
+        )
+    assert response.status_code == 200
+    sources = {item["source"] for item in response.json()["results"]}
+    assert "l0_hot" in sources
+    assert "l2_fact" in sources
+
+
+def test_fake_vector_does_not_boost_summary_scores(test_app):
+    _, _, _, vector = test_app
+
+    async def run():
+        await vector.upsert(
+            "agent_scores",
+            [
+                {
+                    "id": "summary",
+                    "vector": [1.0],
+                    "payload": {"memory_type": "l2_summary", "agent_id": "a"},
+                },
+                {
+                    "id": "fact",
+                    "vector": [1.0],
+                    "payload": {"memory_type": "l2_fact", "agent_id": "a"},
+                },
+            ],
+        )
+        results = await vector.search("agent_scores", [1.0], filter_agent_id="a")
+        return {item["id"]: item["score"] for item in results}
+
+    scores = asyncio.run(run())
+    assert scores["summary"] == scores["fact"]
+
+
+def test_oversized_request_body_returns_413(test_app):
+    app, _, _, _ = test_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/write",
+            json={"agent_id": "agent_large", "content": "x" * (1024 * 1024)},
+        )
+    assert response.status_code == 413
+
+
+def test_query_length_limit_returns_422(test_app):
+    app, _, _, _ = test_app
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/query",
+            json={"agent_id": "agent_large", "query": "x" * (settings.QUERY_MAX_CHARS + 1)},
+        )
+    assert response.status_code == 422
+
+
 def test_blank_query_rejected(test_app):
     """Blank search queries return 422.
 
@@ -145,3 +302,23 @@ def test_blank_query_rejected(test_app):
                 json={"agent_id": "agent_x", "query": query},
             )
             assert response.status_code == 422
+
+
+def test_query_degrades_when_redis_is_unavailable(test_app, monkeypatch):
+    app, engine, store, _ = test_app
+    identity = MemoryIdentity(agent_id="redis_down")
+    with Session(engine) as session:
+        session.add(MemsL2Fact(
+            agent_id=identity.agent_id, namespace=identity.namespace_key,
+            subject="user", predicate="likes", object="Python",
+        ))
+        session.commit()
+
+    async def unavailable(*args, **kwargs):
+        raise ConnectionError("redis is offline")
+
+    monkeypatch.setattr(store, "list_active", unavailable)
+    with TestClient(app) as client:
+        response = client.post("/v1/mems/query", json={"agent_id": identity.agent_id, "query": "Python"})
+    assert response.status_code == 200
+    assert any(item["source"] == "l2_fact" for item in response.json()["results"])

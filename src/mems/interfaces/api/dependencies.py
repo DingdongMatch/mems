@@ -5,7 +5,9 @@ from __future__ import annotations
 from fastapi import Depends
 from sqlmodel import Session
 
+from mems.application.distill_service import DistillApplicationService
 from mems.application.query_service import QueryMemoryService
+from mems.application.redistill_service import RedistillApplicationService
 from mems.application.status_service import StatusApplicationService
 from mems.application.write_service import WriteMemoryService
 from mems.config import settings
@@ -23,6 +25,7 @@ from mems.domain.ports import (
 )
 from mems.infrastructure.external.clock import system_clock
 from mems.infrastructure.external.embedding import get_embedding_service
+from mems.infrastructure.external.jsonl import JsonlReader
 from mems.infrastructure.external.llm_client import get_llm_port
 from mems.infrastructure.external.redis_service import redis_service
 from mems.infrastructure.external.scheduler import scheduler_service
@@ -34,6 +37,7 @@ from mems.infrastructure.persistence.repositories import (
     SqlKnowledgeRepository,
     SqlOutboxRepository,
     SqlRedistillProgressRepository,
+    build_repositories,
 )
 from mems.infrastructure.persistence.uow import (
     SqlDatabaseHealthCheck,
@@ -138,6 +142,31 @@ def get_query_service(
     )
 
 
+def get_redistill_service(
+    session: Session = Depends(get_session),
+    clock: Clock = Depends(get_clock_port),
+) -> RedistillApplicationService:
+    repos = build_repositories(session)
+    distill_service = DistillApplicationService(
+        episodic=repos.episodic,
+        knowledge=repos.knowledge,
+        outbox=repos.outbox,
+        llm=get_llm_port(),
+        clock=clock,
+        uow=SqlUnitOfWork(session),
+    )
+    return RedistillApplicationService(
+        session=session,
+        repos=repos,
+        archive_reader=JsonlReader(settings.storage_l3_path),
+        storage_path=settings.storage_l3_path,
+        distill_service=distill_service,
+        clock=clock,
+        model=settings.OPENAI_MODEL,
+        batch_size=settings.REDISTILL_BATCH_SIZE,
+    )
+
+
 def get_status_service(
     episodic: EpisodicRepository = Depends(get_episodic_repository),
     knowledge: KnowledgeRepository = Depends(get_knowledge_repository),
@@ -146,10 +175,12 @@ def get_status_service(
     scheduler: SchedulerPort = Depends(get_scheduler_port),
     clock: Clock = Depends(get_clock_port),
     health: HealthCheckPort = Depends(get_database_health),
+    outbox: OutboxRepository = Depends(get_outbox_repository),
 ) -> StatusApplicationService:
     return StatusApplicationService(
         episodic=episodic,
         knowledge=knowledge,
+        outbox=outbox,
         store=store,
         vector=vector,
         scheduler=scheduler,
@@ -173,6 +204,7 @@ __all__ = [
     "get_clock_port",
     "get_write_service",
     "get_query_service",
+    "get_redistill_service",
     "get_status_service",
     "get_llm_port",
 ]

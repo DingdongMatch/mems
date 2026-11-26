@@ -6,25 +6,17 @@ import asyncio
 import logging
 from time import perf_counter
 from datetime import timedelta
-from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
 from mems.application.archive_service import ArchiveApplicationService
-from mems.application.commands import RedistillResponse
 from mems.application.distill_service import DistillApplicationService
-from mems.application.redistill_service import (
-    _as_utc,
-    _record_created_at,
-    content_fingerprint,
-)
 from mems.application.vector_sync_service import VectorSyncApplicationService
 from mems.config import settings
-from mems.domain.knowledge import DistillSource
-from mems.domain.outbox import OutboxEvent, OutboxEventType
+from mems.domain.outbox import OutboxEvent, OutboxEventType, outbox_aggregate_key
+from mems.domain.services.distillation import MIN_DISTILL_IMPORTANCE
 from mems.infrastructure.external.clock import get_clock
 from mems.infrastructure.external.embedding import get_embedding_service
-from mems.infrastructure.external.jsonl import JsonlReader
 from mems.infrastructure.external.llm_client import get_llm_port
 from mems.infrastructure.external.observability import bind_log_context
 from mems.infrastructure.external.vector_service import get_vector_service
@@ -36,6 +28,7 @@ from mems.infrastructure.persistence.uow import SqlUnitOfWork
 logger = logging.getLogger(__name__)
 
 Handler = Callable[[Any, OutboxEvent], Any]
+
 
 
 def build_distill_service(session) -> DistillApplicationService:
@@ -62,6 +55,7 @@ def make_archive_service(session) -> ArchiveApplicationService:
     return ArchiveApplicationService(
         episodic=repos.episodic,
         archive=repos.archive,
+        outbox=repos.outbox,
         clock=get_clock(),
         uow=SqlUnitOfWork(session),
     )
@@ -93,7 +87,12 @@ async def trigger_archive_automatically(
             identities = repos.episodic.list_archive_identities(cutoff)
             targets = [(t, u, a, s) for t, u, a, s in identities if a]
         else:
-            targets = [(None, None, agent_id, None)]
+            identities = repos.episodic.list_archive_identities(cutoff)
+            targets = [
+                (t, u, a, s)
+                for t, u, a, s in identities
+                if a and a == agent_id
+            ]
 
     if not targets:
         logger.info(
@@ -104,15 +103,24 @@ async def trigger_archive_automatically(
 
     enqueued = 0
     for tenant_id, user_id, aid, namespace in targets:
-        aggregate_id = f"{aid}:{tenant_id or '_'}:{user_id or '_'}:{namespace or '_'}"
+        aggregate_id = outbox_aggregate_key(
+            OutboxEventType.ARCHIVE_AGENT,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            agent_id=aid,
+            namespace=namespace,
+            resource="archive",
+        )
         with sql_session_factory.create() as session:
             repos = build_repositories(session)
-            if repos.outbox.exists_active(OutboxEventType.ARCHIVE_AGENT, aggregate_id):
-                continue
-            repos.outbox.add(
+            event = repos.outbox.add(
                 OutboxEvent(
                     event_type=OutboxEventType.ARCHIVE_AGENT,
                     aggregate_id=aggregate_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    agent_id=aid,
+                    namespace=namespace,
                     payload={
                         "agent_id": aid,
                         "tenant_id": tenant_id,
@@ -123,7 +131,8 @@ async def trigger_archive_automatically(
                 )
             )
             SqlUnitOfWork(session).commit()
-            enqueued += 1
+            if event.id is not None:
+                enqueued += 1
 
     logger.info(
         "Archive trigger enqueued jobs",
@@ -137,205 +146,96 @@ async def trigger_archive_automatically(
     return {"triggered": True, "reason": "scheduled", "enqueued": enqueued}
 
 
-async def trigger_redistill(
-    agent_id: Optional[str] = None,
-    start_date=None,
-    end_date=None,
-    min_importance: float = 0.0,
-    batch_size: Optional[int] = None,
-) -> RedistillResponse:
-    started = perf_counter()
-    batch_size = batch_size or settings.REDISTILL_BATCH_SIZE
-    model = settings.OPENAI_MODEL
-    start_date = _as_utc(start_date) if start_date else None
-    end_date = _as_utc(end_date) if end_date else None
-
-    try:
-        with sql_session_factory.create() as session:
-            archives = build_repositories(session).archive.list(agent_id)
-
-        if not archives:
-            return RedistillResponse(
-                success=True,
-                processed=0,
-                created=0,
-                updated=0,
-                skipped=0,
-                message="No archive batches found",
-            )
-
-        reader = JsonlReader(settings.storage_l3_path)
-        processed = created = updated = skipped = 0
-        with sql_session_factory.create() as session:
-            repos = build_repositories(session)
-            service = build_distill_service(session)
-            for archive in archives:
-                path = Path(archive.file_path)
-                if not path.exists():
-                    logger.warning(
-                        "Archive file is missing",
-                        extra={
-                            "event": "redistill.archive_missing",
-                            "operation": "redistill",
-                            "result": "skipped",
-                        },
-                    )
-                    continue
-                records = reader.read(path)
-                for line_no, record in enumerate(records, start=1):
-                    if processed >= batch_size:
-                        break
-                    if agent_id and record.get("agent_id") != agent_id:
-                        continue
-                    if (
-                        min_importance > 0
-                        and float(record.get("importance_score", 0.0)) < min_importance
-                    ):
-                        continue
-                    record_created = _record_created_at(record)
-                    if start_date and record_created < start_date:
-                        continue
-                    if end_date and record_created > end_date:
-                        continue
-
-                    fingerprint = content_fingerprint(record)
-                    if repos.redistill.exists(fingerprint, model):
-                        skipped += 1
-                        continue
-                    if not record.get("content"):
-                        skipped += 1
-                        continue
-
-                    source = DistillSource.from_archive_record(
-                        record, str(path), line_no
-                    )
-                    try:
-                        with bind_log_context(
-                            operation="redistill",
-                            source_l1_id=source.source_id,
-                        ):
-                            created_in, updated_in = await service.process_source(
-                                source
-                            )
-                    except Exception as exc:
-                        logger.error(
-                            "Re-distillation source failed",
-                            exc_info=True,
-                            extra={
-                                "event": "redistill.source.failed",
-                                "operation": "redistill",
-                                "source_l1_id": source.source_id,
-                                "error_type": type(exc).__name__,
-                                "result": "failed",
-                            },
-                        )
-                        continue
-
-                    repos.redistill.add(fingerprint, model, str(path), line_no)
-                    processed += 1
-                    created += created_in
-                    updated += updated_in
-                if processed >= batch_size:
-                    break
-            SqlUnitOfWork(session).commit()
-
-        logger.info(
-            "Re-distillation run completed",
-            extra={
-                "event": "redistill.completed",
-                "operation": "redistill",
-                "duration_ms": round((perf_counter() - started) * 1000, 2),
-                "count": processed,
-                "l2_created": created,
-                "l2_updated": updated,
-                "skipped": skipped,
-                "model": model,
-                "result": "success",
-            },
-        )
-        return RedistillResponse(
-            success=True,
-            processed=processed,
-            created=created,
-            updated=updated,
-            skipped=skipped,
-            message=(
-                f"Re-distilled {processed} records with {model}"
-                f" (created {created}, updated {updated}, skipped {skipped})"
-            ),
-        )
-    except Exception as exc:
-        logger.error(
-            "Re-distillation run failed",
-            exc_info=True,
-            extra={
-                "event": "redistill.failed",
-                "operation": "redistill",
-                "duration_ms": round((perf_counter() - started) * 1000, 2),
-                "error_type": type(exc).__name__,
-                "result": "failed",
-            },
-        )
-        return RedistillResponse(
-            success=False,
-            processed=0,
-            created=0,
-            updated=0,
-            skipped=0,
-            message=str(exc),
-        )
-
-
 class OutboxWorker:
     """Claim and dispatch outbox events with idempotent retry."""
 
     def __init__(
         self,
         session_factory,
-        claim_limit: int = 20,
         max_backoff_seconds: int = 3600,
     ) -> None:
         self._session_factory = session_factory
-        self._claim_limit = claim_limit
         self._max_backoff_seconds = max_backoff_seconds
 
-    async def _handle_vector_sync(self, session, event: OutboxEvent) -> None:
+    async def _handle_vector_sync(self, session, event: OutboxEvent):
         embedding = await get_embedding_service()
         vector = await get_vector_service()
-        await build_vector_sync_service(session, embedding, vector).sync(event)
+        return await build_vector_sync_service(session, embedding, vector).sync(event)
 
-    async def _handle_archive_agent(self, session, event: OutboxEvent) -> None:
+    async def _handle_vector_delete(self, session, event: OutboxEvent) -> bool:
+        del session
+        vector = await get_vector_service()
+        return await vector.delete_points(
+            f"agent_{event.agent_id}", [event.payload["vector_id"]]
+        )
+
+    async def _handle_archive_agent(self, session, event: OutboxEvent):
         payload = event.payload
-        await make_archive_service(session).archive(
+        return await make_archive_service(session).archive(
             agent_id=payload["agent_id"],
             tenant_id=payload.get("tenant_id"),
             user_id=payload.get("user_id"),
             namespace=payload.get("namespace"),
             days=payload.get("days", settings.ARCHIVE_DAYS),
+            batch_id=f"outbox-{event.id}",
         )
 
     async def _handle_distill_agent(self, session, event: OutboxEvent) -> None:
+        if settings.LLM_PROVIDER != "openai":
+            return
         payload = event.payload
-        await build_distill_service(session).distill(
+        result = await build_distill_service(session).distill(
             agent_id=payload["agent_id"],
+            tenant_id=payload.get("tenant_id"),
+            user_id=payload.get("user_id"),
+            namespace=payload.get("namespace"),
             batch_size=payload.get("batch_size", settings.DISTILL_BATCH_SIZE),
             force=payload.get("force", False),
         )
+        if not result.success:
+            raise RuntimeError(result.message)
+        repos = build_repositories(session)
+        if not payload.get("force", False) and repos.episodic.has_pending_for_distill(
+            payload["agent_id"],
+            False,
+            MIN_DISTILL_IMPORTANCE,
+            tenant_id=payload.get("tenant_id"),
+            user_id=payload.get("user_id"),
+            namespace=payload.get("namespace"),
+        ):
+            if event.id is None or not repos.outbox.request_rerun(event.id, event.owner or ""):
+                raise RuntimeError("Outbox lease lost before distill continuation")
 
     async def _handle_distill_due(self, session, event: OutboxEvent) -> None:
         del event
+        if settings.LLM_PROVIDER != "openai":
+            return
         repos = build_repositories(session)
         if repos.episodic.count_pending_distill() < settings.DISTILL_THRESHOLD:
             return
-        for agent_id in repos.episodic.list_agents_with_pending_distill():
-            if repos.outbox.exists_active(OutboxEventType.DISTILL_AGENT, agent_id):
-                continue
+        for tenant_id, user_id, agent_id, namespace in (
+            repos.episodic.list_pending_distill_identities()
+        ):
+            aggregate_id = outbox_aggregate_key(
+                OutboxEventType.DISTILL_AGENT,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                agent_id=agent_id,
+                namespace=namespace,
+            )
             repos.outbox.add(
                 OutboxEvent(
                     event_type=OutboxEventType.DISTILL_AGENT,
-                    aggregate_id=agent_id,
+                    aggregate_id=aggregate_id,
+                    tenant_id=tenant_id,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    namespace=namespace,
                     payload={
                         "agent_id": agent_id,
+                        "tenant_id": tenant_id,
+                        "user_id": user_id,
+                        "namespace": namespace,
                         "batch_size": settings.DISTILL_BATCH_SIZE,
                         "force": False,
                     },
@@ -343,9 +243,10 @@ class OutboxWorker:
             )
         SqlUnitOfWork(session).commit()
 
-    async def _dispatch(self, session, event: OutboxEvent) -> None:
+    async def _dispatch(self, session, event: OutboxEvent) -> Any:
         handlers: Dict[str, Handler] = {
             OutboxEventType.VECTOR_SYNC: self._handle_vector_sync,
+            OutboxEventType.VECTOR_DELETE: self._handle_vector_delete,
             OutboxEventType.ARCHIVE_AGENT: self._handle_archive_agent,
             OutboxEventType.DISTILL_AGENT: self._handle_distill_agent,
             OutboxEventType.DISTILL_DUE: self._handle_distill_due,
@@ -353,21 +254,80 @@ class OutboxWorker:
         handler = handlers.get(event.event_type)
         if handler is None:
             raise ValueError(f"Unknown outbox event type: {event.event_type}")
-        await handler(session, event)
+        return await handler(session, event)
+
+    async def _renew_claim(
+        self,
+        event: OutboxEvent,
+        owner: str,
+        stop: asyncio.Event,
+        renew_interval: float,
+    ) -> None:
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=renew_interval)
+                return
+            except TimeoutError:
+                pass
+            if event.id is None:
+                raise RuntimeError("Cannot renew an event without an id")
+            with self._session_factory.create() as session:
+                renewed = build_repositories(session).outbox.renew(
+                    event.id,
+                    owner,
+                    get_clock().now(),
+                    settings.OUTBOX_LEASE_SECONDS,
+                )
+                SqlUnitOfWork(session).commit()
+            if not renewed:
+                raise RuntimeError("Outbox lease lost during dispatch")
+
+    async def _dispatch_with_heartbeat(
+        self,
+        session,
+        event: OutboxEvent,
+        renew_interval: float | None = None,
+    ) -> Any:
+        stop = asyncio.Event()
+        interval = renew_interval or max(1.0, settings.OUTBOX_LEASE_SECONDS / 3)
+        heartbeat = asyncio.create_task(
+            self._renew_claim(event, event.owner or "", stop, interval)
+        )
+        dispatch = asyncio.create_task(self._dispatch(session, event))
+        try:
+            done, _ = await asyncio.wait(
+                (heartbeat, dispatch), return_when=asyncio.FIRST_COMPLETED
+            )
+            if heartbeat in done:
+                await heartbeat
+                raise RuntimeError("Outbox heartbeat stopped unexpectedly")
+            return await dispatch
+        finally:
+            stop.set()
+            for task in (heartbeat, dispatch):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(heartbeat, dispatch, return_exceptions=True)
 
     async def run_once(self) -> int:
-        owner = uuid4().hex
-        now = get_clock().now()
-        with self._session_factory.create() as session:
-            events = build_repositories(session).outbox.claim_ready(
-                owner, self._claim_limit, now
-            )
-            SqlUnitOfWork(session).commit()
-
         processed = 0
-        for event in events:
+        while True:
+            owner = uuid4().hex
+            with self._session_factory.create() as session:
+                events = build_repositories(session).outbox.claim_ready(
+                    owner,
+                    1,
+                    get_clock().now(),
+                    settings.OUTBOX_LEASE_SECONDS,
+                    settings.OUTBOX_MAX_ATTEMPTS,
+                )
+                SqlUnitOfWork(session).commit()
+            if not events:
+                return processed
+
+            event = events[0]
             if event.id is None:
-                continue
+                return processed
             event_started = perf_counter()
             with bind_log_context(
                 outbox_event_id=event.id,
@@ -380,9 +340,25 @@ class OutboxWorker:
                 )
                 try:
                     with self._session_factory.create() as session:
-                        await self._dispatch(session, event)
-                        build_repositories(session).outbox.mark_done(event.id)
+                        result = await self._dispatch_with_heartbeat(session, event)
+                        if result is False or (
+                            hasattr(result, "success") and not result.success
+                        ):
+                            raise RuntimeError("Outbox handler reported failure")
+                        acknowledged = build_repositories(session).outbox.mark_done(
+                            event.id, owner
+                        )
                         SqlUnitOfWork(session).commit()
+                    if not acknowledged:
+                        logger.warning(
+                            "Outbox lease lost before completion",
+                            extra={
+                                "event": "outbox.event.lease_lost",
+                                "outbox_event_id": event.id,
+                                "result": "abandoned",
+                            },
+                        )
+                        return processed
                     logger.info(
                         "Outbox event processing completed",
                         extra={
@@ -414,11 +390,14 @@ class OutboxWorker:
                     available_at = get_clock().now() + timedelta(seconds=backoff)
                     with self._session_factory.create() as session:
                         build_repositories(session).outbox.mark_failed(
-                            event.id, str(exc), available_at
+                            event.id,
+                            owner,
+                            f"{type(exc).__name__}: {exc}"[:2000],
+                            available_at,
+                            settings.OUTBOX_MAX_ATTEMPTS,
                         )
                         SqlUnitOfWork(session).commit()
-            processed += 1
-        return processed
+                processed += 1
 
     async def run_forever(self, poll_interval: float = 1.0) -> None:
         while True:

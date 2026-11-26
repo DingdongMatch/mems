@@ -21,17 +21,16 @@ Mems 是一套定位工业级的 AI Agent 记忆基础设施。它通过四层�
   - **🔍 证据溯源 (Grounding)**：L2 提炼结果强关联 L1 原始语料，拒绝黑盒知识，确保 Agent 每一个推论都有据可查。
   - **📜 跨世纪归档 (L3)**：采用 **Text-First** 策略，将超长期记忆转化为 JSONL 持久化文件，对抗硬件更迭与格式淘汰。
   - **🛡️ 一致的记忆分区**：Tenant/User/Agent identity 与调用方可选传入的 namespace 路径在各存储适配器中保持一致；业务授权由调用方应用负责。
-  - **🔌 原子化接入**：极致精简的 API 设计，只需 `Context -> Query -> Write` 三步即可完成 Agent 记忆赋能。
+  - **🔌 原子化接入**：围绕 `Remember -> Recall` 的极简 API 设计。
 
 ## 架构快照
 
 ```text
 Third-party Agent
-  |-- POST /v1/mems/write --> L0 Redis（热记忆）
-  |                           |-- L0 输出管道（默认关闭）--> Redis Stream 供用户代码消费
-  |                           `-- L1 SQL + Qdrant（情景账本）
-  |                                |-- L2 蒸馏知识（画像/事实/事件/摘要）
-  |                                `-- L3 JSONL 归档
+  |-- POST /v1/mems/write --> L1 SQL + Outbox（持久化主记录）
+  |                           |-- L0 Redis（尽力写入的热缓存 + 可选输出流）
+  |                           |-- L2 蒸馏知识（画像/事实/事件/摘要）
+  |                           `-- L3 JSONL 归档
   |-- POST /v1/mems/query --> L0 + L1 + L2 混合召回
   `-- GET /v1/mems/status | /v1/mems/health --> 健康与流水线状态
 ```
@@ -46,6 +45,16 @@ python scripts/init_db.py
 uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
+
+应用启动只初始化数据库结构，不会清空已有数据。如需重建本地开发环境，请先停止
+应用，再显式执行：
+
+```bash
+uv run python scripts/reset_dev_state.py --yes
+```
+
+该破坏性命令会删除配置数据库中的表、清空配置的 Redis 数据库、删除 L3 文件和
+所有 Qdrant collection，然后重建数据库结构。仅用于开发环境。
 
 ## 5 分钟演示
 
@@ -133,8 +142,20 @@ Mems 的亮点：**归档不是终点**。当底层大模型变得更强时，�
 让长期知识升级为当前模型能提炼出的结论：
 
 ```bash
-curl -X POST http://localhost:8210/v1/mems/redistill
+curl -X POST http://localhost:8210/v1/mems/redistill \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "acme",
+    "user_id": "user-42",
+    "agent_id": "demo-agent"
+  }'
 ```
+
+`tenant_id`、`user_id`、`agent_id` 为必填项。可选 `namespace` 精确选择一个分区；
+省略时只选择该 identity 的默认分区，不会搜索所有子路径。空 JSON 对象（`{}`）
+会返回 HTTP 422。
+
+identity + namespace 的规范键最多 512 UTF-8 字节，超限返回 422。再蒸馏需要 LLM_PROVIDER=openai；失败来源同样占批次额度，响应通过 success=false、attempted 和 failed 显式报告。
 
 归档 JSONL 完整保留原始记忆：再蒸馏从 L3 读取，用当前 `OPENAI_MODEL` 重新执行
 提取 + 对账，并通过版本链（`supersedes` + 冲突日志）无损升级 L2。记录按

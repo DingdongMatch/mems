@@ -21,11 +21,13 @@ The request body is JSON:
 | Field | Type | Required | Default | Constraint | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `agent_id` | string | yes | — | non-empty | agent boundary; every recall filters by this field |
-| `query` | string | yes | — | non-empty and not blank after trimming | search text used for semantic / lexical retrieval |
+| `query` | string | yes | — | non-empty, not blank, at most 8000 chars by default | search text used for semantic / lexical retrieval |
 | `tenant_id` | string | no | `null` | — | tenant hard boundary; equality filter when provided |
 | `user_id` | string | no | `null` | — | user hard boundary; pass it explicitly in multi-user scenarios |
 | `namespace` | string[] | no | `[]` | up to 16 non-empty segments, each at most 128 chars | generic caller context for an exact storage partition |
 | `top_k` | number | no | `5` | 1-100 | maximum number of candidates returned |
+
+The canonical JSON key combining identity and namespace (including version labels and separators) must fit within **512 UTF-8 bytes**. Larger partitions return HTTP 422. This also applies to the default partition when namespace is omitted.
 
 Use the same `namespace` path used for writes. It selects one exact partition and
 does not imply wildcard or descendant search. The caller application must
@@ -156,7 +158,9 @@ Behavior details:
 - vector search and L2 SQL candidates each have internal candidate caps; the
   final unified ranking truncates to `top_k`;
 - L0 snapshots are stored per session; a recall sees each active session
-  snapshot of the agent (returned only when there is lexical overlap);
+  snapshot of the agent (returned only when there is lexical overlap). An
+  Identity-level Redis sorted index bounds candidate reads instead of scanning
+  every matching snapshot;
 - in multi-user scenarios, pass the intended `user_id` and applicable
   `tenant_id`; omitted values select a dedicated null partition, not a wildcard
   (see [Identity Model](/integration/identity-model)).
@@ -182,14 +186,19 @@ and may change. See [MRP 4.3](/introduction/memory-recall-protocol).
 | Scenario | HTTP | Notes |
 | --- | --- | --- |
 | missing `agent_id` / `query` | `422` | FastAPI validation; response body is a `detail` array |
-| `query` is blank | `422` | rejected after server-side trimming |
+| `query` is blank or exceeds `QUERY_MAX_CHARS` | `422` | rejected after server-side trimming |
+| request body exceeds `HTTP_REQUEST_MAX_BYTES` | `413` | hard byte limit applies before JSON parsing |
 | `top_k` outside 1-100 | `422` | validation failed |
-| internal service exception | `500` | `detail` carries the exception (embedding, database, and other hard dependencies) |
+| internal service exception | `500` | generic internal-error response; diagnostic details are logged server-side |
 
-> If the vector service is unavailable, the recall service logs a warning and
-> continues with empty vector results through SQL/lexical retrieval (L1 and L2
-> Summaries are missing, but the request itself succeeds); embedding or
-> database hard-dependency failures return 500.
+> Redis failures skip L0 while durable L1/L2 recall continues. Embedding or
+> vector-search failures skip vector candidates; SQL-backed L2 sources still
+> participate. SQL failures return a generic HTTP 500 response.
+
+Archived L1 vector replicas are deleted through the transactional Outbox.
+Before cleanup completes, query validates candidates against SQL and fetches
+additional vector pages within a bounded scan budget, so stale archived hits
+do not consume the initial candidate window.
 
 ## Notes
 

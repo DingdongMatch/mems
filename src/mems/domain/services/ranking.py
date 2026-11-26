@@ -133,23 +133,33 @@ def l2_summary_base(lexical: float, vector_score: float) -> float:
     return max(lexical, 0.6 * clip01(vector_score))
 
 
+def _as_utc(value: datetime) -> datetime:
+    """Normalize naive timestamps as UTC and convert aware timestamps to UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
 def sort_results(results: list[ScoredMemory]) -> list[ScoredMemory]:
-    """Sort results by score desc, then created_at desc."""
+    """Sort results by score desc, then by UTC creation time desc."""
     epoch = datetime.fromtimestamp(0, tz=timezone.utc)
     return sorted(
         results,
-        key=lambda item: (item.score, item.created_at or epoch),
+        key=lambda item: (item.score, _as_utc(item.created_at or epoch)),
         reverse=True,
     )
 
 
 def detect_query_intents(query: str) -> set[str]:
-    """Infer coarse search intents from the user query."""
+    """Infer intents using ASCII word boundaries and CJK keyword substrings."""
     lowered = query.lower()
-    terms = {term for term in re.split(r"\W+", lowered) if term}
+    terms = set(re.findall(r"[a-z0-9_]+", lowered))
     intents = set()
     for intent, keywords in INTENT_KEYWORDS.items():
-        if terms & keywords:
+        if any(
+            keyword in terms if keyword.isascii() else keyword in lowered
+            for keyword in keywords
+        ):
             intents.add(intent)
     if not intents:
         intents = {"fact", "event"}

@@ -12,6 +12,8 @@ responsibility. The application must authenticate the caller and decide which
 identity it is allowed to use. Mems then applies that identity consistently to
 SQL, Redis, and Qdrant operations.
 
+The canonical JSON key combining identity and namespace (including version labels and separators) must fit within **512 UTF-8 bytes**. Larger partitions return HTTP 422. This also applies to the default partition when namespace is omitted.
+
 ## Identity Fields
 
 | Field | Type | Role |

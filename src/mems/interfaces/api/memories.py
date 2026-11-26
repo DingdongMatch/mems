@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from uuid import uuid4
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, Request
+from fastapi.responses import JSONResponse
 
 from mems.application.commands import (
     MemsQueryResponse,
@@ -14,14 +16,16 @@ from mems.application.commands import (
     MonitorStatusResponse,
 )
 from mems.application.query_service import QueryMemoryService
+from mems.application.redistill_service import RedistillApplicationService
 from mems.application.status_service import StatusApplicationService
 from mems.application.write_service import WriteMemoryService
+from mems.domain.identity import MemoryIdentity
 from mems.interfaces.api.dependencies import (
     get_query_service,
+    get_redistill_service,
     get_status_service,
     get_write_service,
 )
-from mems.interfaces.bootstrap import trigger_redistill
 from mems.interfaces.api.schemas import (
     MemsQueryRequest,
     MemsWriteRequest,
@@ -31,6 +35,23 @@ from mems.interfaces.api.schemas import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/mems", tags=["Mems"])
+
+
+def _request_id(request: Request) -> str:
+    request_id = getattr(request.state, "request_id", None)
+    if not request_id:
+        request_id = request.headers.get("x-request-id")
+    return request_id or uuid4().hex
+
+
+def _internal_error(request: Request) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "request_id": _request_id(request),
+        },
+    )
 
 
 WRITE_MEMORY_EXAMPLE = {
@@ -90,6 +111,7 @@ WRITE_MEMORY_RESPONSE_EXAMPLE = {
                 ],
                 "appended_count": 2,
                 "persisted_to_l1": True,
+                "hot_cache_written": True,
                 "l1_id": 101,
                 "message": "Memory remembered and persisted to L1",
             }
@@ -178,6 +200,7 @@ TURN_WRITE_RESPONSE_EXAMPLE = {
                 ],
                 "appended_count": 2,
                 "persisted_to_l1": True,
+                "hot_cache_written": True,
                 "l1_id": 102,
                 "message": "Memory remembered and persisted to L1",
             }
@@ -220,7 +243,7 @@ def _to_query_command(request: MemsQueryRequest):
     response_model=MemsWriteResponse,
     summary="Remember memory / 写入记忆",
     description=(
-        "Remember memory content into L0 hot memory and persist the primary SQL record into L1. "
+        "Persist the primary L1 SQL record and Outbox events, then update L0 hot memory on a best-effort basis. "
         "Optional namespace path segments select an exact partition; authorize the business context before sending them. "
         "Mems stores memories and leaves runtime state to the caller.\n\n"
         "可选 namespace 路径段用于精确选择分区；传入前应由调用方完成业务授权。Mems 只处理记忆，运行时状态由调用方管理。"
@@ -233,6 +256,7 @@ def _to_query_command(request: MemsQueryRequest):
     },
 )
 async def write_memory(
+    http_request: Request,
     request: MemsWriteRequest = Body(
         openapi_examples={"basic": WRITE_MEMORY_EXAMPLE},  # type: ignore[dict-item]
     ),
@@ -247,7 +271,7 @@ async def write_memory(
             exc_info=True,
             extra={"event": "memory.write.failed", "error_type": type(exc).__name__},
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        return _internal_error(http_request)
 
 
 @router.post(
@@ -268,6 +292,7 @@ async def write_memory(
     },
 )
 async def search_memory(
+    http_request: Request,
     request: MemsQueryRequest = Body(
         openapi_examples={"basic": SEARCH_MEMORY_EXAMPLE},  # type: ignore[dict-item]
     ),
@@ -295,7 +320,7 @@ async def search_memory(
             exc_info=True,
             extra={"event": "memory.query.failed", "error_type": type(exc).__name__},
         )
-        raise HTTPException(status_code=500, detail=str(exc))
+        return _internal_error(http_request)
 
 
 @router.post(
@@ -306,30 +331,63 @@ async def search_memory(
         "Manually re-distill archived L3 records into upgraded L2 using the "
         "current OPENAI_MODEL. Records already processed with the same model "
         "are skipped (content fingerprint + model dedup), so model upgrades "
-        "automatically queue old data for re-distillation.\n\n"
+        "automatically queue old data for re-distillation. Failed attempts count toward "
+        "the batch limit; completed runs report success=false and attempted/failed "
+        "counts on failure. LLM_PROVIDER must be openai.\n\n"
         "手动触发 L3 → L2 再蒸馏：用当前 OPENAI_MODEL 升级 L2。已用同一模型处理过"
         "的记录按内容指纹跳过，模型升级后旧数据会自动进入待重蒸队列。"
     ),
 )
 async def redistill_memories(
+    http_request: Request,
     request: RedistillRequest = Body(
         openapi_examples={
             "basic": {
-                "summary": "Re-distill everything / 全量再蒸馏",
-                "value": {"min_importance": 0.0, "batch_size": 100},
+                "summary": "Re-distill one identity / 按身份再蒸馏",
+                "value": {
+                    "tenant_id": "tenant_demo",
+                    "user_id": "user_alice",
+                    "agent_id": "support_agent",
+                    "min_importance": 0.0,
+                    "batch_size": 100,
+                },
             }
         }
     ),
+    service: RedistillApplicationService = Depends(get_redistill_service),
 ):
-    result = await trigger_redistill(
+    identity = MemoryIdentity(
+        tenant_id=request.tenant_id,
+        user_id=request.user_id,
         agent_id=request.agent_id,
-        start_date=request.start_date,
-        end_date=request.end_date,
-        min_importance=request.min_importance,
-        batch_size=request.batch_size,
+        namespace_segments=tuple(request.namespace),
     )
+    try:
+        result = await service.run(
+            identity,
+            start=request.start_date,
+            end=request.end_date,
+            min_importance=request.min_importance,
+            batch_size=request.batch_size,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to re-distill memories",
+            exc_info=True,
+            extra={
+                "event": "memory.redistill.failed",
+                "error_type": type(exc).__name__,
+            },
+        )
+        return _internal_error(http_request)
+
     if not result.success:
-        raise HTTPException(status_code=500, detail=result.message)
+        logger.error(
+            "Re-distillation run failed",
+            extra={"event": "memory.redistill.failed", "result": "failed"},
+        )
+        # Preserve committed progress and failure counts for a completed run.
+        # Unexpected exceptions above still use the generic HTTP 500 response.
     return result
 
 

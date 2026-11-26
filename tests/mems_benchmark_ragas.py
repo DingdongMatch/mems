@@ -10,54 +10,25 @@ import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from functools import cache
 from pathlib import Path
 from typing import Any
 
 import httpx
-from datasets import Dataset
-from openai import AsyncOpenAI, OpenAI
-from sqlmodel import Session, select
 
-from mems.config import settings
-from mems.domain.identity import MemoryNamespace
-from mems.infrastructure.persistence.database import engine
-from mems.infrastructure.persistence.models import (
-    MemsL1Episodic,
-    MemsL2ConflictLog,
-    MemsL2Event,
-    MemsL2Fact,
-    MemsL2ProfileItem,
-    MemsL2Summary,
-)
-from mems.interfaces.bootstrap import (
-    make_archive_service,
-    make_distill_service,
-    trigger_redistill,
-)
-from mems.infrastructure.external.redis_service import redis_service
-from mems.infrastructure.external.vector_service import get_vector_service
-
-try:
-    from ragas import evaluate
-    from ragas.embeddings.base import BaseRagasEmbeddings
-    from ragas.llms import llm_factory
-    from ragas.metrics import context_recall, faithfulness
-
-    try:
-        from ragas.metrics import answer_relevance as answer_relevance_metric
-    except ImportError:
-        from ragas.metrics import answer_relevancy as answer_relevance_metric
-except ImportError as exc:  # pragma: no cover - import guard
-    raise SystemExit(
-        "Missing RAGAS dependencies. Run `uv sync` first so `ragas` and `datasets` are installed."
-    ) from exc
-
-
-REPORT_DIR = Path("benchmark_reports")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+REPORT_DIR = PROJECT_ROOT / "benchmark_reports"
 DEFAULT_BASE_URL = "http://127.0.0.1:8210"
 DEFAULT_TOP_K = 8
+BENCHMARK_TENANT_ID = "benchmark"
 DEFAULT_RESULTS_PATH = REPORT_DIR / "mems_ragas_results_latest.json"
 DEFAULT_METRICS = "faithfulness,answer_relevance,context_recall"
+
+
+def resolve_output_path(value: str | Path) -> Path:
+    """Resolve relative benchmark paths from the repository, not the CWD."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 @dataclass(frozen=True)
@@ -71,131 +42,158 @@ class EvaluatorConfig:
     embeddings_url: str | None = None
 
 
+@cache
+def _settings() -> Any:
+    """Load validated production settings only when a benchmark run needs them."""
+    from mems.config import settings
+
+    return settings
+
+
+def _secret_value(value: Any) -> str:
+    """Accept both plain strings and Pydantic SecretStr settings."""
+    return value.get_secret_value() if hasattr(value, "get_secret_value") else str(value)
+
+
 def get_answer_llm_config() -> EvaluatorConfig:
     """Return the main LLM config used for answer generation.
 
     返回用于 answer generation 的主 LLM 配置。
     """
     return EvaluatorConfig(
-        api_key=settings.OPENAI_API_KEY,
-        base_url=settings.OPENAI_BASE_URL,
-        model=settings.OPENAI_MODEL,
-        embedding_model=settings.OPENAI_EMBEDDING_MODEL,
+        api_key=_secret_value(_settings().OPENAI_API_KEY),
+        base_url=_settings().OPENAI_BASE_URL,
+        model=_settings().OPENAI_MODEL,
+        embedding_model=_settings().OPENAI_EMBEDDING_MODEL,
         embedding_dimensions=None,
-        timeout=settings.OPENAI_TIMEOUT,
+        timeout=_settings().OPENAI_TIMEOUT,
     )
 
 
 def get_ragas_evaluator_config() -> EvaluatorConfig:
-    """RAGAS_* env vars take precedence; fall back to the shared OpenAI settings.
+    """RAGAS_* env vars take precedence; fall back to shared OpenAI settings.
 
     RAGAS_* 环境变量优先，缺失时回退到共享的 OpenAI 配置；不内置任何密钥。
     """
     dimensions_raw = os.getenv("RAGAS_OPENAI_EMBEDDING_DIMENSIONS")
     return EvaluatorConfig(
-        api_key=os.getenv("RAGAS_OPENAI_API_KEY") or settings.OPENAI_API_KEY,
-        base_url=os.getenv("RAGAS_OPENAI_BASE_URL") or settings.OPENAI_BASE_URL,
-        model=os.getenv("RAGAS_OPENAI_MODEL") or settings.OPENAI_MODEL,
+        api_key=os.getenv("RAGAS_OPENAI_API_KEY")
+        or _secret_value(_settings().OPENAI_API_KEY),
+        base_url=os.getenv("RAGAS_OPENAI_BASE_URL") or _settings().OPENAI_BASE_URL,
+        model=os.getenv("RAGAS_OPENAI_MODEL") or _settings().OPENAI_MODEL,
         embedding_model=os.getenv("RAGAS_OPENAI_EMBEDDING_MODEL")
-        or settings.OPENAI_EMBEDDING_MODEL,
+        or _settings().OPENAI_EMBEDDING_MODEL,
         embedding_dimensions=int(dimensions_raw) if dimensions_raw else None,
-        timeout=int(os.getenv("RAGAS_OPENAI_TIMEOUT", str(settings.OPENAI_TIMEOUT))),
+        timeout=int(os.getenv("RAGAS_OPENAI_TIMEOUT", str(_settings().OPENAI_TIMEOUT))),
         embeddings_url=os.getenv("RAGAS_OPENAI_EMBEDDINGS_URL")
-        or f"{os.getenv('RAGAS_OPENAI_BASE_URL') or settings.OPENAI_BASE_URL}/embeddings",
+        or f"{os.getenv('RAGAS_OPENAI_BASE_URL') or _settings().OPENAI_BASE_URL}/embeddings",
     )
 
 
-def make_ragas_sync_client(config: EvaluatorConfig) -> OpenAI:
+def make_ragas_sync_client(config: EvaluatorConfig) -> Any:
+    """Create the OpenAI client only when benchmark evaluation is requested."""
+    from openai import OpenAI
+
     return OpenAI(
         api_key=config.api_key, base_url=config.base_url, timeout=config.timeout
     )
 
 
-class OpenAICompatibleEmbeddings(BaseRagasEmbeddings):
-    """Minimal embeddings adapter for providers with partial OpenAI compatibility.
+def make_openai_compatible_embeddings(
+    *,
+    api_key: str,
+    base_url: str,
+    model: str,
+    timeout: int,
+    dimensions: int | None = None,
+    embeddings_url: str | None = None,
+) -> Any:
+    """Build a RAGAS adapter with all optional dependencies imported lazily."""
+    from openai import AsyncOpenAI, OpenAI
+    from ragas.embeddings.base import BaseRagasEmbeddings
 
-    直接使用官方 OpenAI client 调 embeddings 接口，避免 LangChain 在某些兼容层上的
-    输入格式转换问题。
-    """
+    class OpenAICompatibleEmbeddings(BaseRagasEmbeddings):
+        """Adapter for providers with partial OpenAI compatibility."""
 
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        base_url: str,
-        model: str,
-        timeout: int,
-        dimensions: int | None = None,
-        embeddings_url: str | None = None,
-    ):
-        super().__init__()
-        self._model = model
-        self._dimensions = dimensions
-        self._api_key = api_key
-        self._timeout = timeout
-        self._embeddings_url = embeddings_url or f"{base_url}/embeddings"
-        # DashScope native embeddings endpoint uses a non-OpenAI request/response shape.
-        self._native_dashscope = "/api/v1/services/embeddings" in self._embeddings_url
-        self._client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
-        self._aclient = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+        def __init__(self) -> None:
+            super().__init__()
+            self._model = model
+            self._dimensions = dimensions
+            self._api_key = api_key
+            self._timeout = timeout
+            self._embeddings_url = embeddings_url or f"{base_url}/embeddings"
+            self._native_dashscope = (
+                "/api/v1/services/embeddings" in self._embeddings_url
+            )
+            self._client = OpenAI(
+                api_key=api_key, base_url=base_url, timeout=timeout
+            )
+            self._aclient = AsyncOpenAI(
+                api_key=api_key, base_url=base_url, timeout=timeout
+            )
 
-    def _request_kwargs(self) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"model": self._model}
-        if self._dimensions is not None:
-            kwargs["dimensions"] = self._dimensions
-        return kwargs
+        def _request_kwargs(self) -> dict[str, Any]:
+            kwargs: dict[str, Any] = {"model": self._model}
+            if self._dimensions is not None:
+                kwargs["dimensions"] = self._dimensions
+            return kwargs
 
-    def _native_embed(self, texts: list[str], text_type: str) -> list[list[float]]:
-        """Embed via the DashScope native embeddings endpoint."""
-        parameters: dict[str, Any] = {"text_type": text_type}
-        if self._dimensions is not None:
-            parameters["dimension"] = self._dimensions
-        response = httpx.post(
-            self._embeddings_url,
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "model": self._model,
-                "input": {"texts": texts},
-                "parameters": parameters,
-            },
-            timeout=self._timeout,
-        )
-        response.raise_for_status()
-        data = response.json()
-        items = sorted(
-            data["output"]["embeddings"], key=lambda item: item["text_index"]
-        )
-        return [item["embedding"] for item in items]
+        def _native_embed(
+            self, texts: list[str], text_type: str
+        ) -> list[list[float]]:
+            parameters: dict[str, Any] = {"text_type": text_type}
+            if self._dimensions is not None:
+                parameters["dimension"] = self._dimensions
+            response = httpx.post(
+                self._embeddings_url,
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json={
+                    "model": self._model,
+                    "input": {"texts": texts},
+                    "parameters": parameters,
+                },
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            items = sorted(
+                data["output"]["embeddings"], key=lambda item: item["text_index"]
+            )
+            return [item["embedding"] for item in items]
 
-    def embed_query(self, text: str) -> list[float]:
-        if self._native_dashscope:
-            return self._native_embed([text], "query")[0]
-        response = self._client.embeddings.create(
-            input=[text], **self._request_kwargs()
-        )
-        return response.data[0].embedding
+        def embed_query(self, text: str) -> list[float]:
+            if self._native_dashscope:
+                return self._native_embed([text], "query")[0]
+            response = self._client.embeddings.create(
+                input=[text], **self._request_kwargs()
+            )
+            return response.data[0].embedding
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        if self._native_dashscope:
-            return self._native_embed(texts, "document")
-        response = self._client.embeddings.create(input=texts, **self._request_kwargs())
-        return [item.embedding for item in response.data]
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            if self._native_dashscope:
+                return self._native_embed(texts, "document")
+            response = self._client.embeddings.create(
+                input=texts, **self._request_kwargs()
+            )
+            return [item.embedding for item in response.data]
 
-    async def aembed_query(self, text: str) -> list[float]:
-        if self._native_dashscope:
-            return await asyncio.to_thread(self.embed_query, text)
-        response = await self._aclient.embeddings.create(
-            input=[text], **self._request_kwargs()
-        )
-        return response.data[0].embedding
+        async def aembed_query(self, text: str) -> list[float]:
+            if self._native_dashscope:
+                return await asyncio.to_thread(self.embed_query, text)
+            response = await self._aclient.embeddings.create(
+                input=[text], **self._request_kwargs()
+            )
+            return response.data[0].embedding
 
-    async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
-        if self._native_dashscope:
-            return await asyncio.to_thread(self.embed_documents, texts)
-        response = await self._aclient.embeddings.create(
-            input=texts, **self._request_kwargs()
-        )
-        return [item.embedding for item in response.data]
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            if self._native_dashscope:
+                return await asyncio.to_thread(self.embed_documents, texts)
+            response = await self._aclient.embeddings.create(
+                input=texts, **self._request_kwargs()
+            )
+            return [item.embedding for item in response.data]
+
+    return OpenAICompatibleEmbeddings()
 
 
 @dataclass(frozen=True)
@@ -218,6 +216,17 @@ class BenchmarkCase:
 
 def _namespace_path(value: str) -> list[str]:
     return ["benchmarks", value]
+
+
+def _canonical_namespace(agent_id: str, user_id: str, namespace: str) -> str:
+    from mems.domain.identity import MemoryNamespace
+
+    return MemoryNamespace.build(
+        tenant_id=BENCHMARK_TENANT_ID,
+        user_id=user_id,
+        agent_id=agent_id,
+        path=tuple(_namespace_path(namespace)),
+    ).key
 
 
 def _make_case(
@@ -871,6 +880,7 @@ async def wait_for_benchmark_dependencies(
     等待 Mems 依赖组件，尤其是 Qdrant，进入可承载 benchmark 的状态。
     """
     warmup_identity = {
+        "tenant_id": BENCHMARK_TENANT_ID,
         "agent_id": "benchmark_warmup_agent",
         "session_id": "benchmark_warmup_session",
         "user_id": "benchmark_warmup_user",
@@ -915,6 +925,7 @@ async def wait_for_benchmark_dependencies(
                 client,
                 f"{base_url}/v1/mems/query",
                 {
+                    "tenant_id": warmup_identity["tenant_id"],
                     "agent_id": warmup_identity["agent_id"],
                     "user_id": warmup_identity["user_id"],
                     "namespace": _namespace_path(warmup_identity["namespace"]),
@@ -943,17 +954,26 @@ async def cleanup_agent_data(
 
     尽力清理某个 agent 的本地存储数据（L1/L2/向量/L0），避免跨轮污染。
     """
+    from sqlmodel import Session, select
+
+    from mems.infrastructure.external.redis_service import redis_service
+    from mems.infrastructure.external.vector_service import get_vector_service
+    from mems.infrastructure.persistence.database import engine
+    from mems.infrastructure.persistence.models import (
+        MemsL1Episodic,
+        MemsL2ConflictLog,
+        MemsL2Event,
+        MemsL2Fact,
+        MemsL2ProfileItem,
+        MemsL2Summary,
+    )
+
     try:
         await redis_service.delete(
             agent_id=agent_id,
             session_id=session_id,
             user_id=user_id,
-            namespace=MemoryNamespace.build(
-                tenant_id=None,
-                user_id=user_id,
-                agent_id=agent_id,
-                path=tuple(_namespace_path(namespace)),
-            ).key,
+            namespace=_canonical_namespace(agent_id, user_id, namespace),
         )
     except Exception:
         pass
@@ -984,6 +1004,11 @@ def backdate_agent_records(agent_id: str, days: int) -> None:
 
     将某个 agent 的 L1 记录回填为较早时间，模拟历史记忆，支撑时间语义与归档用例。
     """
+    from sqlmodel import Session, select
+
+    from mems.infrastructure.persistence.database import engine
+    from mems.infrastructure.persistence.models import MemsL1Episodic
+
     with Session(engine) as session:
         rows = session.exec(
             select(MemsL1Episodic).where(MemsL1Episodic.agent_id == agent_id)
@@ -996,6 +1021,11 @@ def backdate_agent_records(agent_id: str, days: int) -> None:
 
 
 async def force_distill(agent_id: str) -> tuple[dict[str, Any], float]:
+    from sqlmodel import Session
+
+    from mems.infrastructure.persistence.database import engine
+    from mems.interfaces.bootstrap import make_distill_service
+
     started = time.perf_counter()
     with Session(engine) as session:
         service = await make_distill_service(session)
@@ -1062,6 +1092,8 @@ async def generate_answer(
             ),
         },
     ]
+    from openai import AsyncOpenAI
+
     started = time.perf_counter()
     client = AsyncOpenAI(
         api_key=answer_config.api_key,
@@ -1502,6 +1534,7 @@ async def _run_hygiene_case(
                 client,
                 f"{base_url}/v1/mems/write",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
@@ -1513,6 +1546,7 @@ async def _run_hygiene_case(
                 client,
                 f"{base_url}/v1/mems/query",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "namespace": _namespace_path(case.namespace),
@@ -1523,10 +1557,16 @@ async def _run_hygiene_case(
             sources = [item["source"] for item in query_json.get("results", [])]
             notes.append("l0_hit" if "l0_hot" in sources else "l0_miss")
         elif case.scenario_type == "archive_exclusion":
+            from sqlmodel import Session
+
+            from mems.infrastructure.persistence.database import engine
+            from mems.interfaces.bootstrap import make_archive_service
+
             _, write_ms = await post_json(
                 client,
                 f"{base_url}/v1/mems/write",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
@@ -1534,15 +1574,20 @@ async def _run_hygiene_case(
                     "messages": case.background_turns,
                 },
             )
-            backdate_agent_records(agent_id, days=settings.ARCHIVE_DAYS + 30)
+            backdate_agent_records(agent_id, days=_settings().ARCHIVE_DAYS + 30)
             with Session(engine) as session:
                 await make_archive_service(session).archive(
-                    agent_id=agent_id, days=settings.ARCHIVE_DAYS
+                    agent_id=agent_id,
+                    tenant_id=BENCHMARK_TENANT_ID,
+                    user_id=case.user_id,
+                    namespace=_canonical_namespace(agent_id, case.user_id, case.namespace),
+                    days=_settings().ARCHIVE_DAYS,
                 )
             query_json, query_ms = await post_json(
                 client,
                 f"{base_url}/v1/mems/query",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "namespace": _namespace_path(case.namespace),
@@ -1561,6 +1606,7 @@ async def _run_hygiene_case(
                 client,
                 f"{base_url}/v1/mems/write",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": case.user_id,
                     "agent_id": agent_id,
                     "session_id": session_id,
@@ -1577,6 +1623,7 @@ async def _run_hygiene_case(
                 client,
                 f"{base_url}/v1/mems/query",
                 {
+                    "tenant_id": BENCHMARK_TENANT_ID,
                     "user_id": other_user,
                     "agent_id": agent_id,
                     "namespace": _namespace_path(case.namespace),
@@ -1626,15 +1673,21 @@ async def _run_redistill_case(
     trial: int,
 ) -> dict[str, Any]:
     """Extended: re-distill an archived record and verify L2 upgrade."""
+    from sqlmodel import Session
+
+    from mems.infrastructure.persistence.database import engine
+    from mems.interfaces.bootstrap import make_archive_service
+
     started = time.perf_counter()
     agent_id, session_id = _case_identity(case, run_id)
     try:
-        if not settings.OPENAI_API_KEY:
+        if not _secret_value(_settings().OPENAI_API_KEY):
             return _skip_result(case, trial, "redistill_llm_not_configured", started)
         _, write_ms = await post_json(
             client,
             f"{base_url}/v1/mems/write",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -1642,16 +1695,30 @@ async def _run_redistill_case(
                 "messages": case.background_turns,
             },
         )
-        backdate_agent_records(agent_id, days=settings.ARCHIVE_DAYS + 30)
+        backdate_agent_records(agent_id, days=_settings().ARCHIVE_DAYS + 30)
         with Session(engine) as session:
             await make_archive_service(session).archive(
-                agent_id=agent_id, days=settings.ARCHIVE_DAYS
+                agent_id=agent_id,
+                tenant_id=BENCHMARK_TENANT_ID,
+                user_id=case.user_id,
+                namespace=_canonical_namespace(agent_id, case.user_id, case.namespace),
+                days=_settings().ARCHIVE_DAYS,
             )
-        await trigger_redistill(agent_id=agent_id)
+        _, distill_ms = await post_json(
+            client,
+            f"{base_url}/v1/mems/redistill",
+            {
+                "tenant_id": BENCHMARK_TENANT_ID,
+                "user_id": case.user_id,
+                "agent_id": agent_id,
+                "namespace": _namespace_path(case.namespace),
+            },
+        )
         query_json, query_ms = await post_json(
             client,
             f"{base_url}/v1/mems/query",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "namespace": _namespace_path(case.namespace),
@@ -1681,7 +1748,7 @@ async def _run_redistill_case(
                 item["source"] for item in query_json.get("results", [])
             ],
             "write_ms": write_ms,
-            "distill_ms": 0.0,
+            "distill_ms": distill_ms,
             "query_ms": query_ms,
             "answer_ms": 0.0,
             "end_to_end_ms": (time.perf_counter() - started) * 1000,
@@ -1704,16 +1771,16 @@ async def _run_l0_pipeline_case(
     started = time.perf_counter()
     agent_id, session_id = _case_identity(case, run_id)
     try:
-        if not settings.L0_PIPELINE_ENABLED:
+        if not _settings().L0_PIPELINE_ENABLED:
             return _skip_result(case, trial, "l0_pipeline_not_enabled", started)
 
         import redis.asyncio as redis
 
         client_redis = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB,
-            password=settings.REDIS_PASSWORD or None,
+            host=_settings().REDIS_HOST,
+            port=_settings().REDIS_PORT,
+            db=_settings().REDIS_DB,
+            password=_settings().REDIS_PASSWORD or None,
             decode_responses=True,
         )
         try:
@@ -1726,6 +1793,7 @@ async def _run_l0_pipeline_case(
             client,
             f"{base_url}/v1/mems/write",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -1734,7 +1802,7 @@ async def _run_l0_pipeline_case(
             },
         )
         entries = await client_redis.xrevrange(
-            settings.L0_PIPELINE_STREAM, count=5
+            _settings().L0_PIPELINE_STREAM, count=5
         )
         await client_redis.aclose()
         marker = case.expected_l1_hint
@@ -1811,6 +1879,7 @@ async def run_case(
             client,
             f"{base_url}/v1/mems/write",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -1819,12 +1888,13 @@ async def run_case(
             },
         )
         # Simulate old background memories: backdate before distilling them to L2.
-        backdate_agent_records(agent_id, days=settings.ARCHIVE_DAYS + 30)
+        backdate_agent_records(agent_id, days=_settings().ARCHIVE_DAYS + 30)
         distill_result, distill_ms = await force_distill(agent_id)
         _, recent_write_ms = await post_json(
             client,
             f"{base_url}/v1/mems/write",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "session_id": session_id,
@@ -1836,6 +1906,7 @@ async def run_case(
             client,
             f"{base_url}/v1/mems/query",
             {
+                "tenant_id": BENCHMARK_TENANT_ID,
                 "user_id": case.user_id,
                 "agent_id": agent_id,
                 "namespace": _namespace_path(case.namespace),
@@ -1907,7 +1978,8 @@ async def run_case(
     return result
 
 
-def build_ragas_dataset(results: list[dict[str, Any]]) -> tuple[Dataset, list[int]]:
+def eligible_ragas_rows(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[int]]:
+    """Select evaluable rows without importing optional evaluation packages."""
     row_indexes = [
         index
         for index, row in enumerate(results)
@@ -1916,7 +1988,13 @@ def build_ragas_dataset(results: list[dict[str, Any]]) -> tuple[Dataset, list[in
         and row.get("contexts")
         and row.get("answer")
     ]
-    valid_rows = [results[index] for index in row_indexes]
+    return [results[index] for index in row_indexes], row_indexes
+
+
+def build_ragas_dataset(results: list[dict[str, Any]]) -> tuple[Any, list[int]]:
+    from datasets import Dataset
+
+    valid_rows, row_indexes = eligible_ragas_rows(results)
     dataset = Dataset.from_dict(
         {
             "user_input": [row["question"] for row in valid_rows],
@@ -1939,13 +2017,9 @@ def parse_metric_names(raw: str) -> list[str]:
     return names
 
 
-def _new_answer_relevance_metric() -> Any:
-    """Create a more compatible answer-relevance metric instance.
-
-    构造更保守、兼容性更好的 answer relevance 指标实例。
-    """
-    metric_cls = answer_relevance_metric.__class__
-    return metric_cls(strictness=1)
+def _new_answer_relevance_metric(metric: Any) -> Any:
+    """Create a conservative answer-relevance metric instance."""
+    return metric.__class__(strictness=1)
 
 
 def _apply_metric_scores(
@@ -1979,6 +2053,15 @@ def run_ragas(
     metric_names: list[str],
     eval_limit: int | None,
 ) -> None:
+    from ragas import evaluate
+    from ragas.llms import llm_factory
+    from ragas.metrics import context_recall, faithfulness
+
+    try:
+        from ragas.metrics import answer_relevance as answer_relevance_metric
+    except ImportError:
+        from ragas.metrics import answer_relevancy as answer_relevance_metric
+
     if eval_limit is not None:
         results = results[:eval_limit]
     dataset, row_indexes = build_ragas_dataset(results)
@@ -1990,7 +2073,7 @@ def run_ragas(
         client=make_ragas_sync_client(ragas_config),
         temperature=0.0,
     )
-    embeddings = OpenAICompatibleEmbeddings(
+    embeddings = make_openai_compatible_embeddings(
         model=ragas_config.embedding_model,
         api_key=ragas_config.api_key,
         base_url=ragas_config.base_url,
@@ -2001,7 +2084,7 @@ def run_ragas(
     available_metric_specs = {
         "faithfulness": (faithfulness, "faithfulness", "faithfulness"),
         "answer_relevance": (
-            _new_answer_relevance_metric(),
+            _new_answer_relevance_metric(answer_relevance_metric),
             "answer_relevance",
             "answer_relevancy",
         ),
@@ -2105,7 +2188,7 @@ async def main() -> None:
 
     answer_config = get_answer_llm_config()
     ragas_config = get_ragas_evaluator_config()
-    results_path = Path(args.results_path)
+    results_path = resolve_output_path(args.results_path)
     metric_names = parse_metric_names(args.metrics)
     eval_limit = args.eval_limit if args.eval_limit > 0 else None
     run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -2128,7 +2211,7 @@ async def main() -> None:
         if not preflight_llm.choices or not preflight_llm.choices[0].message.content:
             raise SystemExit("RAGAS evaluator LLM preflight returned no content.")
 
-        preflight_embeddings = OpenAICompatibleEmbeddings(
+        preflight_embeddings = make_openai_compatible_embeddings(
             model=ragas_config.embedding_model,
             api_key=ragas_config.api_key,
             base_url=ragas_config.base_url,
@@ -2203,7 +2286,7 @@ async def main() -> None:
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     report_path = (
-        Path(args.report_path)
+        resolve_output_path(args.report_path)
         if args.report_path
         else REPORT_DIR / f"mems_ragas_report_{timestamp}.md"
     )

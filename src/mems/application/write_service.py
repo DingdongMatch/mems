@@ -8,7 +8,11 @@ from mems.application.commands import WriteMemoryCommand, WriteMemoryResult
 from mems.config import settings
 from mems.domain.identity import MemoryIdentity
 from mems.domain.memory import EpisodicMemory
-from mems.domain.outbox import OutboxEvent, OutboxEventType
+from mems.domain.outbox import (
+    OutboxEvent,
+    OutboxEventType,
+    outbox_aggregate_key,
+)
 from mems.domain.ports import (
     Clock,
     EpisodicRepository,
@@ -49,15 +53,27 @@ class WriteMemoryService:
         self._uow = uow
         self._clock = clock
 
-    def _enqueue_distill_agent(self, agent_id: str) -> None:
-        if self._outbox.exists_active(OutboxEventType.DISTILL_AGENT, agent_id):
-            return
+    def _enqueue_distill_agent(self, identity: MemoryIdentity) -> None:
+        aggregate_id = outbox_aggregate_key(
+            OutboxEventType.DISTILL_AGENT,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            agent_id=identity.agent_id,
+            namespace=identity.namespace_key,
+        )
         self._outbox.add(
             OutboxEvent(
                 event_type=OutboxEventType.DISTILL_AGENT,
-                aggregate_id=agent_id,
+                aggregate_id=aggregate_id,
+                tenant_id=identity.tenant_id,
+                user_id=identity.user_id,
+                agent_id=identity.agent_id,
+                namespace=identity.namespace_key,
                 payload={
-                    "agent_id": agent_id,
+                    "agent_id": identity.agent_id,
+                    "tenant_id": identity.tenant_id,
+                    "user_id": identity.user_id,
+                    "namespace": identity.namespace_key,
                     "batch_size": settings.DISTILL_IMMEDIATE_BATCH_SIZE,
                     "force": False,
                 },
@@ -65,9 +81,7 @@ class WriteMemoryService:
         )
 
     def _enqueue_distill_due(self) -> None:
-        aggregate_id = "global"
-        if self._outbox.exists_active(OutboxEventType.DISTILL_DUE, aggregate_id):
-            return
+        aggregate_id = outbox_aggregate_key(OutboxEventType.DISTILL_DUE)
         self._outbox.add(
             OutboxEvent(
                 event_type=OutboxEventType.DISTILL_DUE,
@@ -87,19 +101,6 @@ class WriteMemoryService:
             namespace_segments=tuple(command.namespace),
         )
 
-        l0 = await self._store.append_messages(
-            tenant_id=command.tenant_id,
-            user_id=command.user_id,
-            agent_id=command.agent_id,
-            session_id=command.session_id,
-            messages=new_messages,
-            content=memory_content,
-            ttl_seconds=command.ttl_seconds,
-            max_buffer_size=DEFAULT_CONTEXT_WINDOW,
-            namespace=identity.namespace_key,
-        )
-
-        identity = l0.identity
         memory = EpisodicMemory.create(
             identity=identity,
             content=memory_content,
@@ -114,7 +115,18 @@ class WriteMemoryService:
             self._outbox.add(
                 OutboxEvent(
                     event_type=OutboxEventType.VECTOR_SYNC,
-                    aggregate_id=memory.vector_id,
+                    aggregate_id=outbox_aggregate_key(
+                        OutboxEventType.VECTOR_SYNC,
+                        tenant_id=identity.tenant_id,
+                        user_id=identity.user_id,
+                        agent_id=identity.agent_id,
+                        namespace=identity.namespace_key,
+                        resource=memory.vector_id,
+                    ),
+                    tenant_id=identity.tenant_id,
+                    user_id=identity.user_id,
+                    agent_id=identity.agent_id,
+                    namespace=identity.namespace_key,
                     payload={
                         "kind": "episodic",
                         "l1_id": memory.id,
@@ -128,31 +140,57 @@ class WriteMemoryService:
                     },
                 )
             )
-            if (
-                command.importance_score
-                >= settings.DISTILL_HIGH_IMPORTANCE_THRESHOLD
-            ):
-                self._enqueue_distill_agent(identity.agent_id)
-            else:
-                self._enqueue_distill_due()
+            if settings.LLM_PROVIDER == "openai":
+                if command.importance_score >= settings.DISTILL_HIGH_IMPORTANCE_THRESHOLD:
+                    self._enqueue_distill_agent(identity)
+                else:
+                    self._enqueue_distill_due()
             self._uow.commit()
 
+        l0 = None
+        try:
+            l0 = await self._store.append_messages(
+                tenant_id=command.tenant_id,
+                user_id=command.user_id,
+                agent_id=command.agent_id,
+                session_id=command.session_id,
+                messages=new_messages,
+                content=memory_content,
+                ttl_seconds=command.ttl_seconds,
+                max_buffer_size=DEFAULT_CONTEXT_WINDOW,
+                namespace=identity.namespace_key,
+            )
+        except Exception as exc:
+            logger.warning(
+                "L0 cache write failed after L1 persistence",
+                exc_info=True,
+                extra={
+                    "event": "memory.l0_write.failed",
+                    "agent_id": identity.agent_id,
+                    "error_type": type(exc).__name__,
+                    "result": "degraded",
+                },
+            )
+
+        if persisted and l0 is None:
+            message = "Memory persisted to L1; L0 cache unavailable"
+        elif persisted:
+            message = "Memory remembered and persisted to L1"
+        else:
+            message = "Memory remembered in L0"
         return WriteMemoryResult(
             success=True,
-            tenant_id=l0.tenant_id,
-            user_id=l0.user_id,
-            agent_id=l0.agent_id,
-            session_id=l0.session_id,
+            tenant_id=identity.tenant_id,
+            user_id=identity.user_id,
+            agent_id=identity.agent_id,
+            session_id=identity.session_id,
             namespace=command.namespace,
             importance_score=command.importance_score,
             content=memory_content,
             messages=new_messages,
-            appended_count=len(new_messages),
+            appended_count=len(new_messages) if l0 is not None else 0,
             persisted_to_l1=persisted,
+            hot_cache_written=l0 is not None,
             l1_id=l1_id,
-            message=(
-                "Memory remembered and persisted to L1"
-                if persisted
-                else "Memory remembered in L0"
-            ),
+            message=message,
         )

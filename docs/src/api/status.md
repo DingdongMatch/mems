@@ -93,20 +93,22 @@ otherwise                  → healthy
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `pending_distill` | number | L1 records not yet distilled |
-| `pending_archive` | number | L1 records older than `ARCHIVE_DAYS` (default 30 days) that are not yet archived |
-| `recent_failures` | number | Recent failure count (always 0 in the current version; reserved for outbox failure statistics) |
+| `pending_distill` | number \| null | Active L1 records not yet distilled; `null` when SQL metrics are unavailable |
+| `pending_archive` | number \| null | L1 records older than `ARCHIVE_DAYS` (default 30 days) that are not yet archived |
+| `recent_failures` | number \| null | Outbox events that entered dead-letter state in the last 24 hours |
 | `l0_pipeline_enabled` | boolean | Whether the L0 memory output pipeline is enabled |
-| `profile_items` | number | Active L2 Profile count |
-| `fact_items` | number | Active L2 Fact count |
-| `summary_items` | number | L2 Summary count |
-| `conflict_count` | number | Total conflict-log entries (`mems_l2_conflict_log`) |
-| `stale_profile_items` | number | Active Profiles not re-verified for more than 365 days |
-| `stale_fact_items` | number | Active Facts not re-verified for more than 365 days |
-| `stale_summary_items` | number | Summaries not re-verified for more than 365 days |
+| `profile_items` | number \| null | Active L2 Profile count |
+| `fact_items` | number \| null | Active L2 Fact count |
+| `summary_items` | number \| null | L2 Summary count |
+| `conflict_count` | number \| null | Total conflict-log entries (`mems_l2_conflict_log`) |
+| `stale_profile_items` | number \| null | Active Profiles not re-verified for more than 365 days |
+| `stale_fact_items` | number \| null | Active Facts not re-verified for more than 365 days |
+| `stale_summary_items` | number \| null | Summaries not re-verified for more than 365 days |
 
 Notes:
 
+- when the database is unhealthy, SQL-derived pipeline fields are `null` and the
+  endpoint still returns HTTP 200 with the component checks;
 - `pending_archive` treats a record as expired when `created_at < now - ARCHIVE_DAYS`;
 - the `stale_*` threshold is fixed at 365 days (`STALE_MEMORY_DAYS`), matching
   the verification-decay effect on ranking;

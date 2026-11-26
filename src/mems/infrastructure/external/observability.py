@@ -6,12 +6,14 @@ import json
 import logging
 import sys
 import traceback
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Iterator
+from urllib.parse import parse_qsl, urlencode
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -36,6 +38,9 @@ _SAFE_FIELDS = {
     "l2_created",
     "l2_updated",
     "skipped",
+    "archive_id",
+    "l3_path",
+    "l3_line",
 }
 # Record-only fields. Bodies must never be bound as log context, otherwise every
 # log record produced while handling the request would repeat them.
@@ -75,16 +80,12 @@ class JsonLogFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         context = _log_context.get()
         data: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(
-                record.created, timezone.utc
-            ).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, timezone.utc).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
         }
-        data.update(
-            {key: value for key, value in context.items() if key in _SAFE_FIELDS}
-        )
+        data.update({key: value for key, value in context.items() if key in _SAFE_FIELDS})
         for key in _RECORD_FIELDS:
             if hasattr(record, key):
                 data[key] = getattr(record, key)
@@ -171,8 +172,19 @@ def _is_encoded(encoding: str) -> bool:
 
 
 def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    return any(keyword in lowered for keyword in _SENSITIVE_KEYWORDS)
+    normalized = unicodedata.normalize("NFKC", key).casefold()
+    return any(keyword in normalized for keyword in _SENSITIVE_KEYWORDS)
+
+
+def _redact_query(query: str) -> str:
+    """Redact sensitive query values while preserving non-sensitive parameters."""
+    try:
+        pairs = parse_qsl(query, keep_blank_values=True)
+    except (UnicodeError, ValueError):
+        return "[omitted]"
+    return urlencode(
+        [(key, _REDACTED if _is_sensitive_key(key) else value) for key, value in pairs]
+    )
 
 
 def _redact(value: Any, depth: int = 0) -> Any:
@@ -180,9 +192,7 @@ def _redact(value: Any, depth: int = 0) -> Any:
         return "..."
     if isinstance(value, dict):
         return {
-            key: (
-                _REDACTED if _is_sensitive_key(str(key)) else _redact(item, depth + 1)
-            )
+            key: (_REDACTED if _is_sensitive_key(str(key)) else _redact(item, depth + 1))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -196,10 +206,15 @@ def _render_body(
     encoding: str,
     max_chars: int,
 ) -> tuple[str | None, bool]:
+    if max_chars <= 0:
+        return None, capture.truncated
     if _is_encoded(encoding) or not capture.total_bytes:
         return None, False
     if not _is_json_content_type(content_type):
         return None, False
+    if capture.truncated:
+        return "[omitted]", True
+
     text = capture.data.decode("utf-8", errors="replace")
     try:
         text = json.dumps(
@@ -208,8 +223,9 @@ def _render_body(
             separators=(",", ":"),
         )
     except (TypeError, ValueError):
-        pass
-    truncated = capture.truncated
+        return "[omitted]", False
+
+    truncated = False
     if len(text) > max_chars:
         text = text[:max_chars]
         truncated = True
@@ -230,7 +246,16 @@ def _body_log_fields(
     if body is not None:
         fields[f"{prefix}_body"] = body
         fields[f"{prefix}_body_truncated"] = truncated
+    elif truncated:
+        fields[f"{prefix}_body_truncated"] = True
     return fields
+
+
+def _route_operation(scope: Scope) -> str:
+    route_path = getattr(scope.get("route"), "path", None)
+    if isinstance(route_path, str) and route_path:
+        return route_path
+    return "unmatched"
 
 
 class RequestContextMiddleware:
@@ -252,11 +277,11 @@ class RequestContextMiddleware:
             return
 
         request_id = uuid.uuid4().hex
+        scope.setdefault("state", {})["request_id"] = request_id
         status_code = 500
         started = perf_counter()
         method = scope.get("method", "")
-        path = scope.get("path", "")
-        query = scope.get("query_string", b"").decode("latin-1")
+        query = _redact_query(scope.get("query_string", b"").decode("latin-1"))
         request_type = _header_value(scope.get("headers", []), b"content-type")
         request_encoding = _header_value(scope.get("headers", []), b"content-encoding")
 
@@ -300,7 +325,6 @@ class RequestContextMiddleware:
                 "HTTP request started",
                 extra={
                     "event": "http.request.started",
-                    "operation": path,
                     "http_method": method,
                     "http_query": query,
                 },
@@ -310,7 +334,7 @@ class RequestContextMiddleware:
             except Exception as exc:
                 failed_extra: dict[str, Any] = {
                     "event": "http.request.failed",
-                    "operation": path,
+                    "operation": _route_operation(scope),
                     "http_method": method,
                     "http_query": query,
                     "error_type": type(exc).__name__,
@@ -333,7 +357,7 @@ class RequestContextMiddleware:
             finally:
                 completed_extra: dict[str, Any] = {
                     "event": "http.request.completed",
-                    "operation": path,
+                    "operation": _route_operation(scope),
                     "status_code": status_code,
                     "duration_ms": round((perf_counter() - started) * 1000, 2),
                     "http_method": method,

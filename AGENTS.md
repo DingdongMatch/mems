@@ -110,12 +110,14 @@ async def create_example(session: Session = Depends(get_session)):
 
 ### 3.1.1 当前公开 API 约定
 
-- `POST /v1/mems/write`: 写入记忆到 L0/L1 — 只接收 `content` / `messages` / identity 字段，不接收运行时状态
+- `POST /v1/mems/write`: 先持久化 L1 主记录与 Outbox，再尽力写 L0 热缓存 — 只接收 `content` / `messages` / identity 字段，不接收运行时状态
 - `POST /v1/mems/query`: 跨 L0/L1/L2 混合召回——L0 活跃会话快照 + L1/L2 向量与
   SQL 候选；词法打分使用 CJK bigram + ASCII 整词，各来源 base 归一化到 0-1 后
   叠加意图与新鲜度加分，同分按创建时间倒序
 - `POST /v1/mems/redistill`: 手动触发 L3→L2 再蒸馏，用当前 `OPENAI_MODEL`
-  升级 L2；按「内容指纹 + 模型名」去重，模型更换后旧数据自动进入待重蒸队列
+  升级 L2；`tenant_id` / `user_id` / `agent_id` 必填，`namespace` 省略时只处理
+  该 identity 的默认分区；缺少请求体或空 `{}` 返回 422；按「内容指纹 + 模型名」
+  去重，模型更换后旧数据自动进入待重蒸队列
 - `GET /v1/mems/status`: 查看系统与流水线状态
 - `GET /v1/mems/health`: 轻量健康检查
 
@@ -142,6 +144,7 @@ async def create_example(session: Session = Depends(get_session)):
 - 默认不要只靠 `agent_id` 做多用户隔离
 - API 支持可选 `namespace: list[str]`，由调用方传递通用业务上下文路径段，例如 `["projects", "prj_abc123"]`；它不是权限声明
 - Mems 将经过验证的 identity 与请求 `namespace` 组合，生成不可变的 `MemoryNamespace`；完整内部 namespace 不由客户端指定
+- 规范 namespace JSON 键（包括 identity、版本标记与分隔符）最多 512 UTF-8 字节；write/query/redistill 超限统一返回 422，默认分区同样适用
 - 写入和查询按 identity 与完整 namespace 精确匹配；省略 namespace 使用该 identity 的默认分区，不隐式搜索子路径
 
 ### 3.1.3 核心模型说明
@@ -154,8 +157,8 @@ class MemsWriteRequest(BaseModel):
     agent_id: str
     session_id: str | None
     namespace: list[str] = Field(default_factory=list)  # 通用分区上下文路径段
-    content: str | None       # 直接记忆文本
-    messages: list[MemsMessage]  # 来源消息（可选）
+    content: str | None       # 直接记忆文本，默认上限 32000 字符
+    messages: list[MemsMessage]  # 来源消息，默认最多 100 条、单条 32000 字符
     ttl_seconds: int
     importance_score: float = 0.5  # 记忆重要度（0-1），用于蒸馏优先级
 ```
@@ -168,6 +171,8 @@ class MemsWriteRequest(BaseModel):
 - `importance_score` 达到 `DISTILL_HIGH_IMPORTANCE_THRESHOLD`（默认 0.8）时，
   写入后立即对该 agent 做 batch=1 的定向蒸馏；否则走全局阈值检查
 - 没有 `active_plan`、`temp_variables`、`metadata` 字段
+- 请求体默认上限 1 MiB，超限返回 413；字段超限返回 422
+- 写响应包含 `hot_cache_written`；L0 不可用时 L1 仍成功，响应为 degraded success
 
 **MemsL1Episodic**（数据库表）
 ```python
@@ -194,6 +199,25 @@ class MemsL0Working(BaseModel):
 
 **MemsQueryRequest** 同样支持 `namespace: list[str]`，用于精确查询对应分区；
 省略时使用该 identity 的默认分区，不隐式扩展到子路径；写入与查询需使用相同路径。
+
+**RedistillRequest**
+```python
+class RedistillRequest(BaseModel):
+    tenant_id: str
+    user_id: str
+    agent_id: str
+    namespace: list[str] = Field(default_factory=list)
+    start_date: datetime | None
+    end_date: datetime | None
+    min_importance: float = 0.0
+    batch_size: int | None
+```
+
+规则：三个 identity 字段必填；空请求体或 `{}` 返回 422；省略 `namespace`
+只处理默认分区，不隐式搜索子路径；实际批量取请求值与
+`REDISTILL_BATCH_SIZE` 的较小值，配置是硬上限；失败尝试也占批次额度。
+
+**RedistillResponse**：attempted 为尝试数，failed 为处理失败数，processed 为已提交成功数；失败不写进度。完成的运行返回 200，但处理失败或 LLM 禁用时 success=false，并保留已提交计数；未处理的接口异常返回通用 500。
 
 **QueryResultItem**
 ```python
@@ -262,8 +286,9 @@ from mems.config import settings
 
 ### 3.5 状态端点注意事项
 
-状态端点 `GET /v1/mems/status` 使用 FastAPI 依赖注入获取 Redis、VectorService 和 Session。
-新增的健康检查项也应当通过 `Depends` 注入，而不是直接调用模块单例（否则测试替身无法覆盖）。
+状态端点 `GET /v1/mems/status` 使用 FastAPI 依赖注入获取 Redis、VectorService、Outbox 和 Session。
+DB 不健康时跳过 SQL 指标并返回 `null`，端点仍为 HTTP 200；`recent_failures`
+统计最近 24 小时进入死信状态的 Outbox 事件。新增健康检查项也应通过 `Depends` 注入。
 
 ---
 
@@ -311,12 +336,14 @@ payload 构造下沉到向量适配器，应用层只传领域对象，不感知
 ### 4.5 Outbox 与 Worker
 
 - `domain/outbox.py` 定义 `OutboxEvent` 与 `OutboxEventType`
-  （`vector_sync` / `archive_agent` / `distill_agent` / `distill_due`）。
+  （`vector_sync` / `vector_delete` / `archive_agent` / `distill_agent` / `distill_due`）。
 - `mems_outbox` 表 + `OutboxRepository` 端口承载事务性副作用；写入 L1 时把
   `vector_sync` 与蒸馏触发事件与主记录在同一事务提交。
 - `interfaces/bootstrap.py` 中的 `OutboxWorker` 原子 claim 事件（`pending`→
   `claimed`，带 owner 与租约超时），按事件类型分发给处理器，成功 `done`、
-  失败指数退避后回到 `pending` 重试，实现最终一致与分布式互斥。
+  失败指数退避后回到 `pending` 重试；处理期间定期续租，owner 丢失时取消任务。
+  蒸馏部分失败或候选被锁时不会误标完成。成功批次有剩余候选则续批；合并到已 claim 事件的写入通过 payload 唤醒标记保留，续批不消耗失败重试额度。L2 Profile/Fact 使用 active 部分唯一约束，
+  单值 Fact 额外使用事务级范围锁，唯一冲突在 savepoint 回滚后确定性重试。
 - 默认在 `main.py` lifespan 内启动进程内 worker；`python -m mems.worker`
   可作为独立 worker 水平扩展。
 
@@ -326,8 +353,9 @@ payload 构造下沉到向量适配器，应用层只传领域对象，不感知
 
 ### 5.1 L0→L1 自动双写
 
-用户调用 `/v1/mems/write` 时，L0 缓存同步写，L1 主记录与 `vector_sync` 以及
-蒸馏触发事件在同一事务提交；向量副本由 Outbox worker 异步最终一致。
+用户调用 `/v1/mems/write` 时，L1 主记录与 `vector_sync`、蒸馏触发事件先在
+同一事务提交，再尽力写 L0 缓存；L0 失败返回 degraded success，不回滚 L1。
+向量副本由 Outbox worker 异步最终一致；L0 查询使用 Identity 级 ZSET 有界召回。
 
 ### 5.2 蒸馏任务
 
@@ -341,7 +369,8 @@ payload 构造下沉到向量适配器，应用层只传领域对象，不感知
   并发互斥由 Outbox 状态机 claim 承担，不依赖进程内布尔锁
 - **批内排序**: 非 force 蒸馏按 `importance_score DESC, created_at ASC` 取批，
   保证高价值优先处理
-- **运行前提**: 当前蒸馏依赖可用的 OpenAI-compatible LLM 配置
+- **运行前提**: LLM_PROVIDER=openai 且配置可用的 OpenAI-compatible LLM；provider 留空时写入不 enqueue 蒸馏，已有事件无副作用完成，手动再蒸馏不调用 LLM。空/无提取字段的响应视为失败，不标记来源已蒸馏
+- **来源顺序**: Profile 与单值 Fact 按原始 created_at 对账，旧来源不能覆盖更新值；同值合并证据且验证时间不回退
 
 ```python
 # application/distill_service.py
@@ -353,7 +382,7 @@ class DistillApplicationService:
 ### 5.3 归档任务
 
 - **定时触发**: 每天 3:00 AM，调度器 enqueue `archive_agent` 事件；worker 执行
-  JSONL 文件写入与 `mark_archived`。
+  JSONL 文件写入与 `mark_archived`，同一 SQL 事务 enqueue `vector_delete`。向量同步持有 L1 行锁直到远端 upsert 完成，避免归档删除后副本复活；召回对 SQL 已过滤的向量候选进行有界分页补取。
 
 ```python
 # interfaces/bootstrap.py
@@ -457,7 +486,7 @@ docker compose up -d postgres
 uv run pytest
 
 # 代码检查
-uv run ruff check src/
+uv run ruff check src/ tests/ scripts/
 
 # 类型检查
 uv run mypy src/
@@ -489,6 +518,10 @@ uv run python -m mems.main
 uvicorn mems.main:app --reload --port 8210
 ```
 
+应用启动只初始化数据库结构，不会自动清库。开发环境需要全量重建时，先停止应用，
+再显式执行 `uv run python scripts/reset_dev_state.py --yes`；该命令删除配置数据库中
+的表、清空配置的 Redis DB、删除 L3 归档文件与所有 Qdrant collection，然后重建结构。
+
 ---
 
 ## 10. 环境变量
@@ -502,10 +535,19 @@ uvicorn mems.main:app --reload --port 8210
 | `QDRANT_URL` / `QDRANT_HOST/PORT` | Qdrant 连接 |
 | `EMBEDDING_PROVIDER` | embedding 模型 (sentence-transformers/openai) |
 | `OPENAI_*` | OpenAI-compatible LLM / embedding 配置 |
+| `LLM_PROVIDER` | 可选 LLM provider；留空禁用蒸馏，设为 `openai` 时需配置 `OPENAI_API_KEY` |
+| `APP_ENV` | development / test / production |
 | `SCHEDULER_ENABLED` | 启用调度器 |
 | `OUTBOX_WORKER_ENABLED` | 是否在 lifespan 内启动进程内 Outbox worker |
+| `OUTBOX_LEASE_SECONDS` | Outbox claim 租约秒数（默认 300，最小 60） |
+| `OUTBOX_MAX_ATTEMPTS` | Outbox 事件最大投递尝试次数（默认 5） |
 | `WORKER_POLL_SECONDS` | 独立 worker 轮询间隔 |
-| `REDISTILL_BATCH_SIZE` | 每次手动再蒸馏最多处理的 L3 记录数 |
+| `REDISTILL_BATCH_SIZE` | 每次手动再蒸馏的硬上限（1-1000） |
+| `HTTP_REQUEST_MAX_BYTES` | HTTP 请求体字节上限，默认 1 MiB |
+| `QUERY_MAX_CHARS` | 查询文本字符上限，默认 8000 |
+| `MEMORY_CONTENT_MAX_CHARS` | 记忆正文上限，默认 32000 |
+| `MEMORY_MESSAGE_MAX_COUNT` | 单次写入消息条数上限，默认 100 |
+| `MEMORY_MESSAGE_CONTENT_MAX_CHARS` | 单条消息正文上限，默认 32000 |
 | `LOG_HTTP_BODY_ENABLED` | 是否记录 HTTP 请求/响应 JSON body（默认关闭，含记忆原文） |
 | `LOG_HTTP_BODY_MAX_CHARS` | 单条 body 日志最大字符数（默认 2000，超出截断） |
 

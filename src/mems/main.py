@@ -1,3 +1,4 @@
+import inspect
 import logging
 import asyncio
 from pathlib import Path
@@ -5,8 +6,13 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from mems.config import settings
-from mems.infrastructure.persistence.database import init_db
+from mems.infrastructure.external.embedding import close_embedding_service
+from mems.infrastructure.external.llm_client import close_llm_client
+from mems.infrastructure.external.redis_service import close_redis_service
+from mems.infrastructure.external.vector_service import close_vector_service
+from mems.infrastructure.persistence.database import engine, init_db
 from mems.interfaces.api import memories
+from mems.interfaces.api.middleware import RequestSizeLimitMiddleware
 from mems.interfaces.bootstrap import build_outbox_worker
 from mems.infrastructure.external.scheduler import scheduler_service
 from mems.infrastructure.external.observability import (
@@ -25,37 +31,56 @@ async def lifespan(app: FastAPI):
 
     在应用生命周期前后初始化存储目录、数据库与调度器。
     """
-    init_db()
-    Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
-
     worker_task = None
-    if settings.OUTBOX_WORKER_ENABLED:
-        worker_task = asyncio.create_task(build_outbox_worker().run_forever())
+    try:
+        init_db()
+        Path(settings.storage_l3_path).mkdir(parents=True, exist_ok=True)
 
-    if settings.SCHEDULER_ENABLED:
-        from mems.interfaces.bootstrap import trigger_archive_automatically
+        if settings.OUTBOX_WORKER_ENABLED:
+            worker_task = asyncio.create_task(build_outbox_worker().run_forever())
 
-        scheduler_service.add_archive_job(
-            trigger_archive_automatically,
-            hour=settings.ARCHIVE_CRON_HOUR,
-            minute=settings.ARCHIVE_CRON_MINUTE,
-        )
-        scheduler_service.start()
-        logger.info(
-            "Scheduler started with archive job (distill is threshold-triggered)"
-        )
+        if settings.SCHEDULER_ENABLED:
+            from mems.interfaces.bootstrap import trigger_archive_automatically
 
-    yield
+            scheduler_service.add_archive_job(
+                trigger_archive_automatically,
+                hour=settings.ARCHIVE_CRON_HOUR,
+                minute=settings.ARCHIVE_CRON_MINUTE,
+            )
+            scheduler_service.start()
+            logger.info(
+                "Scheduler started with archive job (distill is threshold-triggered)"
+            )
 
-    if worker_task is not None:
-        worker_task.cancel()
-        try:
-            await worker_task
-        except asyncio.CancelledError:
-            pass
+        yield
+    finally:
+        if settings.SCHEDULER_ENABLED:
+            await _cleanup("scheduler", scheduler_service.shutdown)
 
-    if settings.SCHEDULER_ENABLED:
-        scheduler_service.shutdown()
+        if worker_task is not None:
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Outbox worker cleanup failed")
+
+        await _cleanup("Redis", close_redis_service)
+        await _cleanup("vector store", close_vector_service)
+        await _cleanup("embedding provider", close_embedding_service)
+        await _cleanup("LLM client", close_llm_client)
+        await _cleanup("database engine", engine.dispose)
+
+
+async def _cleanup(name: str, callback) -> None:
+    """Run one lifecycle cleanup without preventing the remaining cleanups."""
+    try:
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:
+        logger.exception("Failed to close %s during application shutdown", name)
 
 
 app = FastAPI(
@@ -79,6 +104,8 @@ app = FastAPI(
         "- **📜 跨世纪归档 (L3)**：采用 **Text-First** 策略，将超长期记忆转化为 JSONL 持久化文件，对抗硬件更迭与格式淘汰。\n"
         "- **🛡️ 一致的记忆分区**：Tenant/User/Agent identity 与调用方提供的 namespace 上下文在各存储适配器中保持一致；业务授权由调用方应用负责。\n"
         "- **🔌 原子化接入**：围绕 `Remember -> Recall` 的极简 API 设计。\n\n"
+        "Canonical identity + namespace keys are limited to 512 UTF-8 bytes (HTTP 422). Re-distillation requires LLM_PROVIDER=openai; failures consume the batch limit and return success=false with attempted/failed counts.\n"
+        "identity + namespace 规范键最多 512 UTF-8 字节，超限返回 422。再蒸馏需启用 LLM_PROVIDER=openai；失败占批次额度，并返回 success=false 及 attempted/failed 计数。\n\n"
         "## Public APIs / 公开接口\n"
         "1. `POST /v1/mems/write` remembers memory content into L0/L1.\n"
         "2. `POST /v1/mems/query` recalls relevant memories across L0, L1, and L2.\n"
@@ -93,6 +120,10 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+)
+app.add_middleware(
+    RequestSizeLimitMiddleware,
+    max_bytes=settings.HTTP_REQUEST_MAX_BYTES,
 )
 app.add_middleware(
     RequestContextMiddleware,

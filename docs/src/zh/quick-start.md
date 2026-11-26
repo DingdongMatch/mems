@@ -41,7 +41,18 @@ uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
 
-返回 HTTP 200 即表示 API 已正常启动。
+返回 HTTP 200 即表示 API 已正常启动。应用启动只初始化数据库结构，不会清空已有数据。
+
+### 重置本地开发数据（破坏性操作）
+
+先停止应用，再显式重建配置好的开发存储：
+
+```bash
+uv run python scripts/reset_dev_state.py --yes
+```
+
+该命令会删除配置数据库中的表、清空配置的 Redis 数据库、删除 L3 归档文件和
+所有 Qdrant collection，然后重建数据库结构。仅用于可丢弃的开发数据。
 
 ## 5. 跑通第一个 Demo
 

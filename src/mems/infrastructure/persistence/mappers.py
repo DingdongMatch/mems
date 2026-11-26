@@ -18,6 +18,7 @@ def episodic_from_orm(row: orm.MemsL1Episodic) -> EpisodicMemory:
         session_id=row.session_id,
         namespace=row.namespace,
         content=row.content,
+        version=row.version,
         messages=list(row.messages_json or []),
         vector_id=row.vector_id,
         importance_score=row.importance_score,
@@ -40,6 +41,7 @@ def episodic_to_orm(
     row.session_id = memory.session_id
     row.namespace = memory.namespace
     row.content = memory.content
+    row.version = memory.version
     row.messages_json = list(memory.messages)
     row.vector_id = memory.vector_id
     row.importance_score = memory.importance_score
@@ -142,6 +144,7 @@ def event_from_orm(row: orm.MemsL2Event) -> Event:
         action=row.action,
         object=row.object,
         time_hint=row.time_hint,
+        semantic_hash=row.semantic_hash,
         importance_score=row.importance_score,
         source_l1_ids=list(row.source_l1_ids or []),
         created_at=row.created_at,
@@ -157,6 +160,7 @@ def event_to_orm(event: Event, row: orm.MemsL2Event) -> orm.MemsL2Event:
     row.action = event.action
     row.object = event.object
     row.time_hint = event.time_hint
+    row.semantic_hash = event.semantic_hash
     row.importance_score = event.importance_score
     row.source_l1_ids = list(event.source_l1_ids)
     row.created_at = event.created_at
@@ -268,11 +272,17 @@ def outbox_from_orm(row: orm.MemsOutbox) -> OutboxEvent:
         id=row.id,
         event_type=OutboxEventType(row.event_type),
         aggregate_id=row.aggregate_id,
+        tenant_id=row.tenant_id,
+        user_id=row.user_id,
+        agent_id=row.agent_id,
+        namespace=row.namespace,
         payload=dict(row.payload or {}),
         status=row.status,
         attempts=row.attempts,
         owner=row.owner,
         last_error=row.last_error,
+        dead=row.dead,
+        dead_at=row.dead_at,
         available_at=row.available_at,
         created_at=row.created_at,
     )
@@ -281,11 +291,17 @@ def outbox_from_orm(row: orm.MemsOutbox) -> OutboxEvent:
 def outbox_to_orm(event: OutboxEvent, row: orm.MemsOutbox) -> orm.MemsOutbox:
     row.event_type = event.event_type
     row.aggregate_id = event.aggregate_id
+    row.tenant_id = event.tenant_id
+    row.user_id = event.user_id
+    row.agent_id = event.agent_id
+    row.namespace = event.namespace
     row.payload = dict(event.payload)
     row.status = event.status
     row.attempts = event.attempts
     row.owner = event.owner
     row.last_error = event.last_error
+    row.dead = event.dead
+    row.dead_at = event.dead_at
     row.available_at = event.available_at
     row.created_at = event.created_at
     return row

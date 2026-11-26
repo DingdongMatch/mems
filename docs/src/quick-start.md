@@ -41,7 +41,21 @@ uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
 
-An HTTP 200 response means the service is up.
+An HTTP 200 response means the service is up. Startup initializes the database
+schema but does not clear existing data.
+
+### Reset local development data (destructive)
+
+Stop the application first, then explicitly rebuild the configured development
+storage:
+
+```bash
+uv run python scripts/reset_dev_state.py --yes
+```
+
+This drops the configured database tables, flushes the configured Redis
+database, removes L3 archive files and all Qdrant collections, and recreates the
+schema. Use it only for disposable development data.
 
 ## 5. Run the first demo
 

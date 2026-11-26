@@ -15,6 +15,7 @@ from mems.domain.ports import (
     EpisodicRepository,
     HealthCheckPort,
     KnowledgeRepository,
+    OutboxRepository,
     SchedulerPort,
     VectorStorePort,
     WorkingMemoryStore,
@@ -31,6 +32,7 @@ class StatusApplicationService:
         self,
         episodic: EpisodicRepository,
         knowledge: KnowledgeRepository,
+        outbox: OutboxRepository,
         store: WorkingMemoryStore,
         vector: VectorStorePort,
         scheduler: SchedulerPort,
@@ -39,6 +41,7 @@ class StatusApplicationService:
     ) -> None:
         self._episodic = episodic
         self._knowledge = knowledge
+        self._outbox = outbox
         self._store = store
         self._vector = vector
         self._scheduler = scheduler
@@ -48,10 +51,12 @@ class StatusApplicationService:
     async def status(self) -> MonitorStatusResponse:
         checks: dict[str, HealthCheckItem] = {}
 
+        database_healthy = True
         try:
             self._health.healthcheck()
             checks["database"] = HealthCheckItem(status="healthy")
         except Exception as exc:
+            database_healthy = False
             checks["database"] = HealthCheckItem(status="unhealthy", detail=str(exc))
 
         try:
@@ -85,18 +90,31 @@ class StatusApplicationService:
         cutoff = now - timedelta(days=settings.ARCHIVE_DAYS)
         stale_cutoff = now - timedelta(days=STALE_MEMORY_DAYS)
 
+        sql_metrics: dict[str, int] = {}
+        if database_healthy:
+            try:
+                sql_metrics = {
+                    "pending_distill": self._episodic.count_pending_distill(),
+                    "pending_archive": self._episodic.count_pending_archive(cutoff),
+                    "recent_failures": self._outbox.count_recent_dead(
+                        now - timedelta(hours=24)
+                    ),
+                    "profile_items": self._knowledge.count_active_profiles(),
+                    "fact_items": self._knowledge.count_active_facts(),
+                    "summary_items": self._knowledge.count_summaries(),
+                    "conflict_count": self._knowledge.count_conflicts(),
+                    "stale_profile_items": self._knowledge.count_stale_profiles(stale_cutoff),
+                    "stale_fact_items": self._knowledge.count_stale_facts(stale_cutoff),
+                    "stale_summary_items": self._knowledge.count_stale_summaries(stale_cutoff),
+                }
+            except Exception:
+                checks["database"] = HealthCheckItem(
+                    status="unhealthy", detail="Pipeline metrics unavailable"
+                )
+
         pipeline = MonitorPipelineStatus(
-            pending_distill=self._episodic.count_pending_distill(),
-            pending_archive=self._episodic.count_pending_archive(cutoff),
-            recent_failures=0,
             l0_pipeline_enabled=settings.L0_PIPELINE_ENABLED,
-            profile_items=self._knowledge.count_active_profiles(),
-            fact_items=self._knowledge.count_active_facts(),
-            summary_items=self._knowledge.count_summaries(),
-            conflict_count=self._knowledge.count_conflicts(),
-            stale_profile_items=self._knowledge.count_stale_profiles(stale_cutoff),
-            stale_fact_items=self._knowledge.count_stale_facts(stale_cutoff),
-            stale_summary_items=self._knowledge.count_stale_summaries(stale_cutoff),
+            **sql_metrics,
         )
 
         statuses = {item.status for item in checks.values()}

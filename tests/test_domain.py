@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+from pydantic import SecretStr, ValidationError
+
+from mems.config import Settings
 from mems.domain.identity import MemoryIdentity
 from mems.domain.identity import MemoryNamespace
 from mems.domain.knowledge import (
@@ -36,6 +40,9 @@ class FakeKnowledgeRepository:
         self.summaries = []
         self._next_id = 1
 
+    def source_created_at(self, identity, source_ids):
+        return None
+
     def get_active_profile(self, identity, category, key):
         for profile in self.profiles:
             if (
@@ -65,6 +72,9 @@ class FakeKnowledgeRepository:
             and fact.subject == subject
             and fact.predicate == predicate
         ]
+
+    def lock_fact_scope(self, identity, subject, predicate):
+        return None
 
     def save_profile(self, profile):
         if profile.id is None:
@@ -177,12 +187,70 @@ def test_distillation_policy():
     assert filter_record("") == "empty"
     assert filter_record("hi") == "low_signal"
     assert filter_record("user: hi\nassistant: ok") == "low_signal"
+    assert filter_record("booked a room for tonight") is None
+    assert filter_record("The token budget is sufficient") is None
+    assert filter_record("ok thanks") == "greeting"
+    assert filter_record("谢谢你的帮助") == "greeting"
+    assert filter_record("我喜欢Rust") is None
 
     memory = EpisodicMemory(agent_id="a", content="x", vector_id="v")
     assert eligible_for_distill(memory, force=False, min_importance=0.5)
     memory.is_distilled = True
     assert not eligible_for_distill(memory, force=False, min_importance=0.5)
     assert eligible_for_distill(memory, force=True, min_importance=0.5)
+
+
+def test_config_defaults_and_secret_values():
+    config = Settings(
+        _env_file=None,
+        OPENAI_API_KEY="llm-secret",
+        REDIS_PASSWORD="redis-secret",
+        QDRANT_API_KEY="qdrant-secret",
+        OPENAI_EMBEDDING_API_KEY="embedding-secret",
+    )
+    assert config.APP_ENV == "development"
+    assert config.OUTBOX_LEASE_SECONDS == 300
+    assert config.OUTBOX_MAX_ATTEMPTS == 5
+    assert isinstance(config.OPENAI_API_KEY, SecretStr)
+    assert config.OPENAI_API_KEY.get_secret_value() == "llm-secret"
+    assert config.REDIS_PASSWORD.get_secret_value() == "redis-secret"
+    assert config.QDRANT_API_KEY.get_secret_value() == "qdrant-secret"
+    assert isinstance(config.OPENAI_EMBEDDING_API_KEY, SecretStr)
+    assert config.OPENAI_EMBEDDING_API_KEY.get_secret_value() == "embedding-secret"
+    assert "llm-secret" not in repr(config.OPENAI_API_KEY)
+
+
+def test_local_embedding_does_not_require_openai_credentials():
+    config = Settings(_env_file=None, EMBEDDING_PROVIDER="sentence-transformers")
+    assert config.EMBEDDING_PROVIDER == "sentence-transformers"
+    assert config.OPENAI_API_KEY.get_secret_value() == ""
+
+
+def test_openai_providers_validate_credentials():
+    config = Settings(
+        _env_file=None,
+        EMBEDDING_PROVIDER="openai",
+        LLM_PROVIDER="openai",
+        OPENAI_API_KEY="shared-secret",
+    )
+    assert config.OPENAI_API_KEY.get_secret_value() == "shared-secret"
+    with pytest.raises(ValidationError, match="OPENAI_EMBEDDING_API_KEY"):
+        Settings(_env_file=None, EMBEDDING_PROVIDER="openai")
+    with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
+        Settings(_env_file=None, LLM_PROVIDER="openai")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("OUTBOX_LEASE_SECONDS", 59),
+        ("OUTBOX_MAX_ATTEMPTS", 0),
+        ("LOG_HTTP_BODY_MAX_CHARS", -1),
+    ],
+)
+def test_config_rejects_out_of_range_values(field, value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
 
 
 def test_reconciliation_profile_creates_and_supersedes():

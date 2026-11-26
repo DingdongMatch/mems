@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
+from typing import Any, cast
 
+from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlmodel import select
 
 from mems.domain.identity import MemoryIdentity
 from mems.domain.knowledge import ConflictLog, Event, Fact, Profile, Summary
-from mems.infrastructure.persistence import models as orm
+from mems.infrastructure.persistence import models
 from mems.infrastructure.persistence.mappers import (
     conflict_to_orm,
     event_from_orm,
@@ -22,9 +26,30 @@ from mems.infrastructure.persistence.mappers import (
 )
 from mems.infrastructure.persistence.repositories.base import SqlRepository
 
+orm = cast(Any, models)
+
 
 class SqlKnowledgeRepository(SqlRepository):
     """SQLModel-backed L2 knowledge repository."""
+
+    def source_created_at(
+        self, identity: MemoryIdentity, source_ids: list[int]
+    ) -> datetime | None:
+        if not source_ids:
+            return None
+        rows = self._session.exec(
+            select(orm.MemsL1Episodic.id, orm.MemsL1Episodic.created_at).where(
+                orm.MemsL1Episodic.id.in_(source_ids),
+                orm.MemsL1Episodic.tenant_id.is_not_distinct_from(identity.tenant_id),
+                orm.MemsL1Episodic.user_id.is_not_distinct_from(identity.user_id),
+                orm.MemsL1Episodic.agent_id == identity.agent_id,
+                orm.MemsL1Episodic.namespace == identity.namespace_key,
+            )
+        ).all()
+        # Archive-only evidence uses the source dates persisted on the L2 entity.
+        if len(rows) != len(set(source_ids)):
+            return None
+        return max(row[1] for row in rows)
 
     def list_active_profiles(self, identity: MemoryIdentity) -> list[Profile]:
         query = select(orm.MemsL2ProfileItem).where(
@@ -49,18 +74,23 @@ class SqlKnowledgeRepository(SqlRepository):
         return [fact_from_orm(row) for row in rows]
 
     def list_summaries(self, identity: MemoryIdentity) -> list[Summary]:
-        query = select(orm.MemsL2Summary).where(
-            orm.MemsL2Summary.tenant_id == identity.tenant_id,
-            orm.MemsL2Summary.user_id == identity.user_id,
-            orm.MemsL2Summary.agent_id == identity.agent_id,
-            orm.MemsL2Summary.namespace == identity.namespace_key,
+        query = (
+            select(orm.MemsL2Summary)
+            .where(
+                orm.MemsL2Summary.tenant_id == identity.tenant_id,
+                orm.MemsL2Summary.user_id == identity.user_id,
+                orm.MemsL2Summary.agent_id == identity.agent_id,
+                orm.MemsL2Summary.namespace == identity.namespace_key,
+            )
+            .order_by(
+                orm.MemsL2Summary.created_at.asc(),  # type: ignore[attr-defined]
+                orm.MemsL2Summary.id.asc(),  # type: ignore[union-attr]
+            )
         )
         rows = self._session.exec(query).all()
         return [summary_from_orm(row) for row in rows]
 
-    def list_profiles_for_query(
-        self, identity: MemoryIdentity, limit: int
-    ) -> list[Profile]:
+    def list_profiles_for_query(self, identity: MemoryIdentity, limit: int) -> list[Profile]:
         query = select(orm.MemsL2ProfileItem).where(
             orm.MemsL2ProfileItem.agent_id == identity.agent_id,
             orm.MemsL2ProfileItem.status == "active",
@@ -72,9 +102,7 @@ class SqlKnowledgeRepository(SqlRepository):
         rows = self._session.exec(query).all()
         return [profile_from_orm(row) for row in rows]
 
-    def list_facts_for_query(
-        self, identity: MemoryIdentity, limit: int
-    ) -> list[Fact]:
+    def list_facts_for_query(self, identity: MemoryIdentity, limit: int) -> list[Fact]:
         query = select(orm.MemsL2Fact).where(
             orm.MemsL2Fact.agent_id == identity.agent_id,
             orm.MemsL2Fact.status == "active",
@@ -86,12 +114,8 @@ class SqlKnowledgeRepository(SqlRepository):
         rows = self._session.exec(query).all()
         return [fact_from_orm(row) for row in rows]
 
-    def list_events_for_query(
-        self, identity: MemoryIdentity, limit: int
-    ) -> list[Event]:
-        query = select(orm.MemsL2Event).where(
-            orm.MemsL2Event.agent_id == identity.agent_id
-        )
+    def list_events_for_query(self, identity: MemoryIdentity, limit: int) -> list[Event]:
+        query = select(orm.MemsL2Event).where(orm.MemsL2Event.agent_id == identity.agent_id)
         query = self._apply_identity_filter(query, orm.MemsL2Event, identity)
         query = query.order_by(
             orm.MemsL2Event.created_at.desc()  # type: ignore[attr-defined]
@@ -99,12 +123,8 @@ class SqlKnowledgeRepository(SqlRepository):
         rows = self._session.exec(query).all()
         return [event_from_orm(row) for row in rows]
 
-    def list_summaries_for_query(
-        self, identity: MemoryIdentity, limit: int
-    ) -> list[Summary]:
-        query = select(orm.MemsL2Summary).where(
-            orm.MemsL2Summary.agent_id == identity.agent_id
-        )
+    def list_summaries_for_query(self, identity: MemoryIdentity, limit: int) -> list[Summary]:
+        query = select(orm.MemsL2Summary).where(orm.MemsL2Summary.agent_id == identity.agent_id)
         query = self._apply_identity_filter(query, orm.MemsL2Summary, identity)
         query = query.order_by(
             orm.MemsL2Summary.last_verified_at.desc()  # type: ignore[attr-defined]
@@ -165,6 +185,27 @@ class SqlKnowledgeRepository(SqlRepository):
         ).all()
         return [fact_from_orm(row) for row in rows]
 
+    def lock_fact_scope(
+        self, identity: MemoryIdentity, subject: str, predicate: str
+    ) -> None:
+        lock_key = json.dumps(
+            {
+                "tenant_id": identity.tenant_id,
+                "user_id": identity.user_id,
+                "agent_id": identity.agent_id,
+                "namespace": identity.namespace_key,
+                "subject": subject,
+                "predicate": predicate,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+            {"key": lock_key},
+        )
+
     def save_profile(self, profile: Profile) -> Profile:
         if profile.id is None:
             row = orm.MemsL2ProfileItem()
@@ -198,11 +239,34 @@ class SqlKnowledgeRepository(SqlRepository):
         return fact
 
     def add_event(self, event: Event) -> Event:
-        row = orm.MemsL2Event()
-        event_to_orm(event, row)
-        self._session.add(row)
-        self._session.flush()
-        event.id = row.id
+        if event.semantic_hash is None:
+            raise ValueError("Event semantic_hash is required")
+
+        row = event_to_orm(event, orm.MemsL2Event())
+        values = row.model_dump(exclude={"id"})
+        self._session.exec(pg_insert(orm.MemsL2Event).values(**values).on_conflict_do_nothing())
+
+        canonical = self._session.exec(
+            select(orm.MemsL2Event)
+            .where(
+                orm.MemsL2Event.tenant_id == event.tenant_id,
+                orm.MemsL2Event.user_id == event.user_id,
+                orm.MemsL2Event.agent_id == event.agent_id,
+                orm.MemsL2Event.namespace == event.namespace,
+                orm.MemsL2Event.semantic_hash == event.semantic_hash,
+            )
+            .with_for_update(of=orm.MemsL2Event)
+            .execution_options(populate_existing=True)
+        ).one()
+        merged_sources = list(
+            dict.fromkeys([*(canonical.source_l1_ids or []), *event.source_l1_ids])
+        )
+        if merged_sources != canonical.source_l1_ids:
+            canonical.source_l1_ids = merged_sources
+            self._session.add(canonical)
+            self._session.flush()
+        event.id = canonical.id
+        event.source_l1_ids = merged_sources
         return event
 
     def add_conflict(self, conflict: ConflictLog) -> ConflictLog:
@@ -231,15 +295,11 @@ class SqlKnowledgeRepository(SqlRepository):
 
     def count_active_profiles(self) -> int:
         return self._count(
-            select(orm.MemsL2ProfileItem).where(
-                orm.MemsL2ProfileItem.status == "active"
-            )
+            select(orm.MemsL2ProfileItem).where(orm.MemsL2ProfileItem.status == "active")
         )
 
     def count_active_facts(self) -> int:
-        return self._count(
-            select(orm.MemsL2Fact).where(orm.MemsL2Fact.status == "active")
-        )
+        return self._count(select(orm.MemsL2Fact).where(orm.MemsL2Fact.status == "active"))
 
     def count_summaries(self) -> int:
         return self._count(select(orm.MemsL2Summary))
@@ -265,19 +325,13 @@ class SqlKnowledgeRepository(SqlRepository):
 
     def count_stale_summaries(self, cutoff: datetime) -> int:
         return self._count(
-            select(orm.MemsL2Summary).where(
-                orm.MemsL2Summary.last_verified_at < cutoff
-            )
+            select(orm.MemsL2Summary).where(orm.MemsL2Summary.last_verified_at < cutoff)
         )
 
     def _count(self, statement) -> int:
         from sqlalchemy import func
 
-        return int(
-            self._session.exec(
-                select(func.count()).select_from(statement.subquery())
-            ).one()
-        )
+        return int(self._session.exec(select(func.count()).select_from(statement.subquery())).one())
 
     def _apply_identity_filter(self, query, model, identity: MemoryIdentity):
         from mems.infrastructure.persistence.repositories.base import (

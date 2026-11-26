@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional, cast
 
+from sqlalchemy.dialects.postgresql import insert
 from sqlmodel import select
 
-from mems.infrastructure.persistence import models as orm
+from mems.infrastructure.persistence import models
 from mems.infrastructure.persistence.repositories.base import SqlRepository
+
+orm = cast(Any, models)
 
 
 class SqlRedistillProgressRepository(SqlRepository):
@@ -28,12 +32,17 @@ class SqlRedistillProgressRepository(SqlRepository):
         model: str,
         l3_path: Optional[str],
         l3_line: Optional[int],
-    ) -> None:
-        row = orm.MemsRedistillProgress(
-            content_hash=content_hash,
-            model=model,
-            l3_path=l3_path,
-            l3_line=l3_line,
+    ) -> bool:
+        result = self._session.execute(
+            insert(orm.MemsRedistillProgress)
+            .values(
+                content_hash=content_hash,
+                model=model,
+                l3_path=l3_path,
+                l3_line=l3_line,
+                processed_at=datetime.now(timezone.utc),
+            )
+            .on_conflict_do_nothing()
+            .returning(orm.MemsRedistillProgress.id)
         )
-        self._session.add(row)
-        self._session.flush()
+        return result.scalar_one_or_none() is not None

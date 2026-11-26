@@ -35,3 +35,31 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+# Keep the focused rule set without reformatting legacy prose and test fixtures.
+ignore = ["E501"]
+[tool.ruff.lint.extend-per-file-ignores]
+"src/**/*.py" = ["I001"]
+"scripts/init_db.py" = ["I001"]
+"scripts/reset_dev_state.py" = ["I001"]
+"tests/conftest.py" = ["I001"]
+"tests/test_domain.py" = ["I001"]
+"tests/test_mappers.py" = ["I001"]
+"tests/test_redistill.py" = ["I001"]
+
+[tool.mypy]
+python_version = "3.12"
+check_untyped_defs = true
+plugins = ["pydantic.mypy"]

@@ -21,17 +21,16 @@ Unlike a single-layer vector database or basic RAG stack, Mems is designed to co
 - **🔍 Evidence grounding**: L2 distilled outputs stay strongly linked to the original L1 source material, avoiding black-box knowledge and keeping every inference traceable.
 - **📜 Century-scale archive (L3)**: A text-first strategy that turns ultra-long-term memory into persistent JSONL files, resisting hardware turnover and format obsolescence.
 - **🛡️ Consistent memory partitioning**: Tenant/User/Agent identity and optional caller-provided namespace paths are applied across storage adapters; business authorization stays in the caller application.
-- **🔌 Atomic integration**: An extremely compact API design where agent memory can be integrated in just three steps: `Context -> Query -> Write`.
+- **🔌 Atomic integration**: An extremely compact API design centered on `Remember -> Recall`.
 
 ## Architecture Snapshot
 
 ```text
 Third-party Agent
-  |-- POST /v1/mems/write --> L0 Redis (hot memory)
-  |                           |-- L0 output pipeline (off by default) --> Redis Stream for your own code
-  |                           `-- L1 SQL + Qdrant (episodic ledger)
-  |                                |-- L2 distilled knowledge (profiles/facts/events/summaries)
-  |                                `-- L3 JSONL archive
+  |-- POST /v1/mems/write --> L1 SQL + Outbox (durable master record)
+  |                           |-- L0 Redis (best-effort hot cache + optional output stream)
+  |                           |-- L2 distilled knowledge (profiles/facts/events/summaries)
+  |                           `-- L3 JSONL archive
   |-- POST /v1/mems/query --> L0 + L1 + L2 hybrid recall
   `-- GET /v1/mems/status | /v1/mems/health --> health and pipeline metrics
 ```
@@ -46,6 +45,17 @@ python scripts/init_db.py
 uv run python -m mems.main
 curl http://localhost:8210/v1/mems/health
 ```
+
+Application startup initializes the schema but never clears existing data. To
+rebuild a local development environment, stop the app and explicitly run:
+
+```bash
+uv run python scripts/reset_dev_state.py --yes
+```
+
+This destructive command drops the configured database tables, clears the
+configured Redis database, removes L3 files and all Qdrant collections, then
+recreates the schema. It is for development only.
 
 ## 5-Minute Demo
 
@@ -139,8 +149,20 @@ stronger, you can re-distill archived memories so long-term knowledge upgrades
 to what the current model can extract:
 
 ```bash
-curl -X POST http://localhost:8210/v1/mems/redistill
+curl -X POST http://localhost:8210/v1/mems/redistill \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tenant_id": "acme",
+    "user_id": "user-42",
+    "agent_id": "demo-agent"
+  }'
 ```
+
+`tenant_id`, `user_id`, and `agent_id` are required. An optional `namespace`
+selects an exact partition; omitting it selects that identity's default
+partition, not all child paths. An empty JSON object (`{}`) returns HTTP 422.
+
+Canonical identity + namespace keys are limited to 512 UTF-8 bytes (HTTP 422 above the limit). Re-distillation requires LLM_PROVIDER=openai; failed sources consume the batch budget and return success=false with attempted and failed counts.
 
 Archived JSONL keeps the full raw memory, so re-distillation reads from L3,
 re-runs extraction + reconciliation with the current `OPENAI_MODEL`, and upgrades

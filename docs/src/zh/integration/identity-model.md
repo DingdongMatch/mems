@@ -9,6 +9,8 @@ Namespace 是存储分区标识，用于让不同适配器采用一致的命名�
 调用方应用负责。应用需要认证调用者并判断其可使用的 identity，Mems 再将该
 identity 一致地应用到 SQL、Redis 和 Qdrant 操作中。
 
+identity 与 namespace 组合后的规范 JSON 键（包括版本标记和路径分隔符）最多为 **512 个 UTF-8 字节**；超过限制返回 HTTP 422。此限制也适用于省略 namespace 时的默认分区。
+
 ## Identity 字段
 
 | 字段 | 类型 | 角色 |

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from types import SimpleNamespace
+from urllib.parse import parse_qsl
 
 import pytest
 
@@ -11,6 +12,8 @@ from mems.infrastructure.external import llm_client
 from mems.infrastructure.external.observability import (
     JsonLogFormatter,
     RequestContextMiddleware,
+    _BodyCapture,
+    _render_body,
     bind_log_context,
 )
 
@@ -106,10 +109,7 @@ def test_json_formatter_omits_exception_message_but_keeps_stack() -> None:
     assert "private memory text" not in result
     parsed = json.loads(result)
     assert parsed["exception"]["type"] == "ValueError"
-    assert (
-        "test_json_formatter_omits_exception_message"
-        in parsed["exception"]["traceback"]
-    )
+    assert "test_json_formatter_omits_exception_message" in parsed["exception"]["traceback"]
 
 
 @pytest.mark.asyncio
@@ -193,6 +193,7 @@ def test_openai_client_uses_configured_credentials_and_endpoint(monkeypatch) -> 
         calls.update(kwargs)
         return object()
 
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")
     monkeypatch.setattr(llm_client, "_client", None)
     monkeypatch.setattr(llm_client, "AsyncOpenAI", fake_async_openai)
     monkeypatch.setattr(settings, "OPENAI_API_KEY", "test-openai-key")
@@ -212,7 +213,12 @@ async def test_request_middleware_logs_bodies_with_redaction(http_logs) -> None:
             "agent_id": "agent-1",
             "content": "hello",
             "password": "hunter2",
-            "nested": {"api_key": "key-1", "items": [{"token": "tok"}]},
+            "ＰＡＳＳＷＯＲＤ": "fullwidth-password",
+            "nested": {
+                "api_key": "key-1",
+                "ａｐｉ＿ｋｅｙ": "fullwidth-key",
+                "items": [{"token": "tok"}],
+            },
         }
     ).encode()
     response_payload = json.dumps({"ok": True, "authorization": "Bearer x"}).encode()
@@ -273,7 +279,12 @@ async def test_request_middleware_logs_bodies_with_redaction(http_logs) -> None:
         "agent_id": "agent-1",
         "content": "hello",
         "password": "***",
-        "nested": {"api_key": "***", "items": [{"token": "***"}]},
+        "ＰＡＳＳＷＯＲＤ": "***",
+        "nested": {
+            "api_key": "***",
+            "ａｐｉ＿ｋｅｙ": "***",
+            "items": [{"token": "***"}],
+        },
     }
     assert completed["request_body_truncated"] is False
     assert completed["response_bytes"] == len(response_payload)
@@ -381,7 +392,7 @@ async def test_request_middleware_skips_non_json_and_encoded_bodies(http_logs) -
 
 
 @pytest.mark.asyncio
-async def test_request_middleware_falls_back_to_raw_invalid_json(http_logs) -> None:
+async def test_request_middleware_omits_invalid_json_body(http_logs) -> None:
     async def app(scope, receive, send):
         await receive()
         await send({"type": "http.response.start", "status": 204, "headers": []})
@@ -398,8 +409,117 @@ async def test_request_middleware_falls_back_to_raw_invalid_json(http_logs) -> N
     )
 
     completed = http_logs[-1]
-    assert completed["request_body"] == "not json"
+    assert completed["request_body"] == "[omitted]"
     assert completed["request_body_truncated"] is False
+    assert "not json" not in json.dumps(completed)
+
+
+def test_render_body_never_exposes_truncated_json() -> None:
+    capture = _BodyCapture(limit=8)
+    capture.add(b'{"content":"private memory"}')
+
+    body, truncated = _render_body(capture, "application/json", "", 2000)
+
+    assert body == "[omitted]"
+    assert truncated is True
+    assert "private memory" not in body
+
+
+@pytest.mark.asyncio
+async def test_request_middleware_redacts_query_and_logs_route_template(
+    http_logs,
+) -> None:
+    request_payload = b'{"content":"hello"}'
+    raw_path = "/v1/mems/write/private-path"
+    query = (
+        "access_token=query-secret&q=hello+world&"
+        "%EF%BC%B0%EF%BC%A1%EF%BC%B3%EF%BC%B3%EF%BC%B7%EF%BC%AF%EF%BC%B2%EF%BC%A4=unicode-secret"
+    )
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def send(message):
+        pass
+
+    scope = _scope(path=raw_path, query=query.encode("ascii"))
+    scope["route"] = SimpleNamespace(path="/v1/mems/write")
+    await RequestContextMiddleware(app, log_bodies=True)(
+        scope,
+        _receive(request_payload),
+        send,
+    )
+
+    started = http_logs[0]
+    completed = http_logs[-1]
+    assert started["operation"] == "http_request"
+    assert completed["operation"] == "/v1/mems/write"
+    assert raw_path not in json.dumps(http_logs)
+    assert "query-secret" not in json.dumps(completed)
+    assert "unicode-secret" not in json.dumps(completed)
+    assert dict(parse_qsl(completed["http_query"])) == {
+        "access_token": "***",
+        "q": "hello world",
+        "ＰＡＳＳＷＯＲＤ": "***",
+    }
+
+
+@pytest.mark.asyncio
+async def test_request_middleware_marks_unmatched_route_without_raw_path(
+    http_logs,
+) -> None:
+    raw_path = "/private/raw-path"
+
+    async def app(scope, receive, send):
+        await receive()
+        await send({"type": "http.response.start", "status": 404, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def send(message):
+        pass
+
+    await RequestContextMiddleware(app)(
+        _scope(path=raw_path),
+        _receive(b""),
+        send,
+    )
+
+    completed = http_logs[-1]
+    assert completed["operation"] == "unmatched"
+    assert raw_path not in json.dumps(http_logs)
+
+
+@pytest.mark.asyncio
+async def test_request_middleware_nonpositive_body_limit_omits_body(
+    http_logs,
+) -> None:
+    async def app(scope, receive, send):
+        await receive()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/json")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b'{"ok":true}'})
+
+    async def send(message):
+        pass
+
+    await RequestContextMiddleware(app, log_bodies=True, max_body_chars=0)(
+        _scope(request_headers=[(b"content-type", b"application/json")]),
+        _receive(b'{"content":"hello"}'),
+        send,
+    )
+
+    completed = http_logs[-1]
+    assert completed["request_bytes"] > 0
+    assert completed["response_bytes"] > 0
+    assert "request_body" not in completed
+    assert "response_body" not in completed
 
 
 @pytest.mark.asyncio
@@ -447,3 +567,11 @@ def test_json_formatter_reads_body_fields_from_record_only() -> None:
     with bind_log_context(request_body="from-context"):
         result = json.loads(JsonLogFormatter().format(record))
     assert result["request_body"] == "from-record"
+
+
+def test_llm_provider_gate_applies_to_cached_client(monkeypatch):
+    monkeypatch.setattr(settings, "LLM_PROVIDER", None)
+    monkeypatch.setattr(llm_client, "_client", object())
+    monkeypatch.setattr(settings, "OPENAI_API_KEY", "embedding-only-key")
+    with pytest.raises(ValueError, match="LLM_PROVIDER is disabled"):
+        llm_client.get_llm_client()

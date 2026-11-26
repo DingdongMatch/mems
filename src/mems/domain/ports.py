@@ -92,6 +92,8 @@ class EpisodicRepository(Protocol):
         agent_id: str,
         vector_ids: list[str],
         identity: Optional[MemoryIdentity] = None,
+        *,
+        for_update: bool = False,
     ) -> list[EpisodicMemory]: ...
 
     def find_for_distill(
@@ -100,6 +102,10 @@ class EpisodicRepository(Protocol):
         batch_size: int,
         force: bool,
         min_importance: float,
+        *,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        namespace: Optional[str] = None,
     ) -> list[EpisodicMemory]: ...
 
     def list_expired(
@@ -115,14 +121,33 @@ class EpisodicRepository(Protocol):
         self, cutoff: datetime
     ) -> list[tuple[Optional[str], Optional[str], str, Optional[str]]]: ...
 
+    def has_pending_for_distill(
+        self,
+        agent_id: str,
+        force: bool,
+        min_importance: float,
+        *,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ) -> bool: ...
+
     def count_pending_distill(self) -> int: ...
 
     def count_pending_archive(self, cutoff: datetime) -> int: ...
 
     def list_agents_with_pending_distill(self) -> list[str]: ...
 
+    def list_pending_distill_identities(
+        self,
+    ) -> list[tuple[Optional[str], Optional[str], str, Optional[str]]]: ...
+
 class KnowledgeRepository(Protocol):
     """Sync SQL repository for L2 knowledge entities."""
+
+    def source_created_at(
+        self, identity: MemoryIdentity, source_ids: list[int]
+    ) -> datetime | None: ...
 
     def list_active_profiles(self, identity: MemoryIdentity) -> list[Profile]: ...
 
@@ -162,6 +187,10 @@ class KnowledgeRepository(Protocol):
         self, identity: MemoryIdentity, subject: str, predicate: str
     ) -> list[Fact]: ...
 
+    def lock_fact_scope(
+        self, identity: MemoryIdentity, subject: str, predicate: str
+    ) -> None: ...
+
     def save_profile(self, profile: Profile) -> Profile: ...
 
     def save_fact(self, fact: Fact) -> Fact: ...
@@ -191,7 +220,11 @@ class ArchiveRepository(Protocol):
 
     def add(self, batch: ArchiveBatch) -> ArchiveBatch: ...
 
-    def list(self, agent_id: Optional[str] = None) -> list[ArchiveBatch]: ...
+    def list(
+        self,
+        agent_id: Optional[str] = None,
+        identity: Optional[MemoryIdentity] = None,
+    ) -> list[ArchiveBatch]: ...
 
 
 class RedistillProgressRepository(Protocol):
@@ -205,7 +238,7 @@ class RedistillProgressRepository(Protocol):
         model: str,
         l3_path: Optional[str],
         l3_line: Optional[int],
-    ) -> None: ...
+    ) -> bool: ...
 
 
 class VectorStorePort(Protocol):
@@ -228,6 +261,7 @@ class VectorStorePort(Protocol):
         top_k: int = 5,
         filter_agent_id: Optional[str] = None,
         filters: Optional[dict[str, str]] = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]: ...
 
     async def get_collections(self) -> list[str]: ...
@@ -286,6 +320,8 @@ class UnitOfWork(Protocol):
 
     def rollback(self) -> None: ...
 
+    def begin_nested(self) -> ContextManager[None]: ...
+
 
 class HealthCheckPort(Protocol):
     """Database health check adapter."""
@@ -298,14 +334,45 @@ class OutboxRepository(Protocol):
 
     def add(self, event: OutboxEvent) -> OutboxEvent: ...
 
-    def exists_active(self, event_type: str, aggregate_id: str) -> bool: ...
+    def exists_active(
+        self,
+        event_type: str,
+        aggregate_id: str,
+        *,
+        tenant_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        namespace: Optional[str] = None,
+    ) -> bool: ...
 
     def claim_ready(
-        self, owner: str, limit: int, now: datetime
+        self,
+        owner: str,
+        limit: int,
+        now: datetime,
+        lease_seconds: int,
+        max_attempts: int,
     ) -> list[OutboxEvent]: ...
 
-    def mark_done(self, event_id: int) -> None: ...
+    def count_recent_dead(self, cutoff: datetime) -> int: ...
+
+    def renew(
+        self,
+        event_id: int,
+        owner: str,
+        now: datetime,
+        lease_seconds: int,
+    ) -> bool: ...
+
+    def mark_done(self, event_id: int, owner: str) -> bool: ...
+
+    def request_rerun(self, event_id: int, owner: str) -> bool: ...
 
     def mark_failed(
-        self, event_id: int, error: str, available_at: datetime
-    ) -> None: ...
+        self,
+        event_id: int,
+        owner: str,
+        error: str,
+        available_at: datetime,
+        max_attempts: int,
+    ) -> bool: ...

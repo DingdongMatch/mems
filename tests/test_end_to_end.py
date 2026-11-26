@@ -15,12 +15,113 @@ from mems.infrastructure.persistence.models import (
     MemsL2Fact,
     MemsL2ProfileItem,
     MemsL2Summary,
+    MemsOutbox,
 )
+from mems.interfaces.api import dependencies
 from mems.interfaces.bootstrap import (
     build_outbox_worker,
     make_archive_service,
     make_distill_service,
 )
+
+
+def test_status_degrades_when_database_healthcheck_fails(test_app):
+    app, _, _, _ = test_app
+
+    class FailingHealth:
+        def healthcheck(self):
+            raise RuntimeError("database unavailable")
+
+    app.dependency_overrides[dependencies.get_database_health] = lambda: FailingHealth()
+    with TestClient(app) as client:
+        response = client.get("/v1/mems/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "unhealthy"
+    assert body["checks"]["database"]["status"] == "unhealthy"
+    assert body["pipeline"]["pending_distill"] is None
+    assert body["pipeline"]["recent_failures"] is None
+    assert body["pipeline"]["profile_items"] is None
+
+
+def test_status_counts_recent_dead_letters(test_app):
+    app, engine, _, _ = test_app
+    now = datetime.now(timezone.utc)
+    with Session(engine) as session:
+        session.add(
+            MemsOutbox(
+                event_type="vector_sync",
+                aggregate_id="dead-recent",
+                status="dead",
+                dead=True,
+                dead_at=now,
+            )
+        )
+        session.add(
+            MemsOutbox(
+                event_type="vector_sync",
+                aggregate_id="dead-old",
+                status="dead",
+                dead=True,
+                dead_at=now - timedelta(hours=25),
+            )
+        )
+        session.add(
+            MemsOutbox(
+                event_type="vector_sync",
+                aggregate_id="retry-pending",
+                status="pending",
+                last_error="transient",
+            )
+        )
+        session.commit()
+    with TestClient(app) as client:
+        response = client.get("/v1/mems/status")
+    assert response.status_code == 200
+    assert response.json()["pipeline"]["recent_failures"] == 1
+
+
+def test_l0_failure_does_not_rollback_l1(test_app, monkeypatch):
+    app, engine, store, _ = test_app
+
+    async def fail_append(**kwargs):
+        raise RuntimeError("Redis unavailable")
+
+    monkeypatch.setattr(store, "append_messages", fail_append)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/write",
+            json={"agent_id": "agent_l0_down", "content": "A durable backend memory."},
+        )
+    assert response.status_code == 200
+    assert response.json()["persisted_to_l1"] is True
+    assert response.json()["hot_cache_written"] is False
+    assert response.json()["appended_count"] == 0
+    with Session(engine) as session:
+        assert session.exec(select(MemsL1Episodic)).one().content == "A durable backend memory."
+
+
+def test_sql_failure_never_writes_l0(test_app, monkeypatch):
+    app, _, store, _ = test_app
+    calls = 0
+
+    class FailingEpisodicRepository:
+        def add(self, memory):
+            raise RuntimeError("database unavailable")
+
+    async def track_append(**kwargs):
+        nonlocal calls
+        calls += 1
+
+    app.dependency_overrides[dependencies.get_episodic_repository] = FailingEpisodicRepository
+    monkeypatch.setattr(store, "append_messages", track_append)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/write",
+            json={"agent_id": "agent_sql_down", "content": "A memory that must not enter L0."},
+        )
+    assert response.status_code == 500
+    assert calls == 0
 
 
 def test_memory_pipeline_end_to_end(test_app):
@@ -84,8 +185,27 @@ def test_memory_pipeline_end_to_end(test_app):
         assert monitor_before_archive.json()["pipeline"]["pending_archive"] == 1
 
     with Session(engine) as session:
+        distill_service = asyncio.run(make_distill_service(session))
+        distill_result = asyncio.run(
+            distill_service.distill(
+                agent_id="agent_test", batch_size=10, force=False
+            )
+        )
+        assert distill_result.success is True
+        assert distill_result.distilled_count == 1
+        assert distill_result.l2_created >= 1
+
+    with Session(engine) as session:
         archive_result = asyncio.run(
-            make_archive_service(session).archive(agent_id="agent_test", days=30)
+            make_archive_service(session).archive(
+                agent_id="agent_test",
+                tenant_id=None,
+                user_id=None,
+                namespace=MemoryNamespace.build(
+                    tenant_id=None, user_id=None, agent_id="agent_test"
+                ).key,
+                days=30,
+            )
         )
         assert archive_result.success is True
         assert archive_result.archived_count == 1
@@ -109,17 +229,6 @@ def test_memory_pipeline_end_to_end(test_app):
         monitor_after_archive = client.get("/v1/mems/status")
         assert monitor_after_archive.status_code == 200
         assert monitor_after_archive.json()["pipeline"]["pending_archive"] == 0
-
-    with Session(engine) as session:
-        distill_service = asyncio.run(make_distill_service(session))
-        distill_result = asyncio.run(
-            distill_service.distill(
-                agent_id="agent_test", batch_size=10, force=False
-            )
-        )
-        assert distill_result.success is True
-        assert distill_result.distilled_count == 1
-        assert distill_result.l2_created >= 1
 
     with Session(engine) as session:
         l1_record = session.exec(
@@ -233,17 +342,60 @@ def test_write_memory_keeps_l1_record_when_vector_sync_fails(
         assert "vector unavailable" in (record.last_sync_error or "")
 
 
+def test_vector_upsert_false_keeps_outbox_event_pending(test_app, monkeypatch):
+    app, engine, _, _ = test_app
+
+    class FalseVectorService:
+        async def upsert_episodic(self, collection_name, memory, vector):
+            return False
+
+        async def upsert_summary(self, collection_name, summary, vector):
+            return False
+
+    async def get_false_vector_service():
+        return FalseVectorService()
+
+    monkeypatch.setattr(
+        "mems.interfaces.bootstrap.get_vector_service", get_false_vector_service
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/mems/write",
+            json={"agent_id": "agent_vector_false", "content": "remember this"},
+        )
+        assert response.status_code == 200
+
+    asyncio.run(build_outbox_worker().run_once())
+
+    with Session(engine) as session:
+        event = session.exec(
+            select(MemsOutbox).where(MemsOutbox.event_type == "vector_sync")
+        ).one()
+        record = session.exec(
+            select(MemsL1Episodic).where(MemsL1Episodic.agent_id == "agent_vector_false")
+        ).one()
+        assert event.status == "pending"
+        assert event.attempts == 1
+        assert record.vector_status == "failed"
+        assert "upsert returned false" in (record.last_sync_error or "")
+
+
 def test_distill_reconciliation_supersedes_profile_value(test_app):
     """Verify newer profile values supersede older active values.
 
     验证较新的画像值会覆盖较旧的活跃值。
     """
     _, engine, _, _ = test_app
+    namespace = MemoryNamespace.build(
+        tenant_id=None, user_id=None, agent_id="agent_conflict"
+    ).key
 
     with Session(engine) as session:
         session.add(
             MemsL1Episodic(
                 agent_id="agent_conflict",
+                namespace=namespace,
                 session_id="session_a",
                 content="user: I like Python.",
                 vector_id="vec_python",
@@ -253,6 +405,7 @@ def test_distill_reconciliation_supersedes_profile_value(test_app):
         session.add(
             MemsL1Episodic(
                 agent_id="agent_conflict",
+                namespace=namespace,
                 session_id="session_b",
                 content="user: I prefer Rust now.",
                 vector_id="vec_rust",

@@ -27,6 +27,8 @@
 | `ttl_seconds` | number | 否 | `1800` | 1-604800 | L0 热快照 TTL（秒）；L1 主记录不受此值影响 |
 | `importance_score` | number | 否 | `0.5` | 0-1 | 重要度，用于蒸馏优先级 |
 
+identity 与 namespace 组合后的规范 JSON 键（包括版本标记和路径分隔符）最多为 **512 个 UTF-8 字节**；超过限制返回 HTTP 422。此限制也适用于省略 namespace 时的默认分区。
+
 `messages` 元素格式：
 
 | 字段 | 类型 | 必填 | 约束 | 含义 |

@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import math
-
-import pytest
+import os
+import subprocess
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import mems_benchmark_ragas as bench
+import pytest
 
 
 def test_parse_metric_names():
@@ -27,7 +31,7 @@ def test_percentile():
     assert bench.percentile(values, 1.0) == 4.0
 
 
-def test_build_ragas_dataset_filters_non_eligible():
+def test_build_ragas_dataset_filters_non_eligible(monkeypatch):
     rows = [
         {
             "case_id": "ok_1",
@@ -57,6 +61,24 @@ def test_build_ragas_dataset_filters_non_eligible():
             "ground_truth": "g3",
         },
     ]
+    valid_rows, indexes = bench.eligible_ragas_rows(rows)
+    assert indexes == [0]
+    assert valid_rows == [rows[0]]
+
+    class FakeDataset:
+        def __init__(self, values):
+            self.values = values
+
+        def __len__(self):
+            return len(self.values["user_input"])
+
+        def __getitem__(self, key):
+            return self.values[key]
+
+    fake_module = SimpleNamespace(
+        Dataset=SimpleNamespace(from_dict=lambda values: FakeDataset(values))
+    )
+    monkeypatch.setitem(sys.modules, "datasets", fake_module)
     dataset, indexes = bench.build_ragas_dataset(rows)
     assert indexes == [0]
     assert len(dataset) == 1
@@ -239,8 +261,22 @@ def test_report_conflict_resolved_only_counts_conflict_scenarios(tmp_path):
         report,
         "http://x",
         8,
-        bench.get_answer_llm_config(),
-        bench.get_ragas_evaluator_config(),
+        bench.EvaluatorConfig(
+            api_key="test-key",
+            base_url="http://x",
+            model="test-model",
+            embedding_model="test-embedding",
+            embedding_dimensions=None,
+            timeout=30,
+        ),
+        bench.EvaluatorConfig(
+            api_key="test-key",
+            base_url="http://x",
+            model="test-model",
+            embedding_model="test-embedding",
+            embedding_dimensions=None,
+            timeout=30,
+        ),
     )
     text = report.read_text(encoding="utf-8")
     line = next(
@@ -259,13 +295,69 @@ def test_ragas_config_falls_back_to_settings(monkeypatch):
         "RAGAS_OPENAI_TIMEOUT",
     ):
         monkeypatch.delenv(key, raising=False)
+    fake_settings = SimpleNamespace(
+        OPENAI_API_KEY="test-key",
+        OPENAI_BASE_URL="http://llm.test/v1",
+        OPENAI_MODEL="test-model",
+        OPENAI_EMBEDDING_MODEL="test-embedding",
+        OPENAI_TIMEOUT=30,
+    )
+    monkeypatch.setattr(bench, "_settings", lambda: fake_settings)
     config = bench.get_ragas_evaluator_config()
-    assert config.api_key == bench.settings.OPENAI_API_KEY
-    assert config.base_url == bench.settings.OPENAI_BASE_URL
-    assert config.model == bench.settings.OPENAI_MODEL
+    assert config.api_key == "test-key"
+    assert config.base_url == "http://llm.test/v1"
+    assert config.model == "test-model"
     assert config.embedding_dimensions is None
 
 
 def test_no_hardcoded_api_key_in_source():
-    source = open("tests/mems_benchmark_ragas.py", encoding="utf-8").read()
+    source = Path(__file__).with_name("mems_benchmark_ragas.py").read_text(
+        encoding="utf-8"
+    )
     assert "sk-" not in source
+
+
+def test_output_paths_are_repository_relative(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    assert bench.resolve_output_path("benchmark_reports/results.json") == (
+        bench.PROJECT_ROOT / "benchmark_reports" / "results.json"
+    )
+    absolute = tmp_path / "custom.json"
+    assert bench.resolve_output_path(absolute) == absolute
+
+
+def test_import_has_no_optional_or_production_side_effects(tmp_path):
+    """Collection must work without RAGAS/OpenAI or a configured database."""
+    tests_dir = Path(__file__).resolve().parent
+    env = {**os.environ, "PYTHONPATH": str(tests_dir)}
+    code = """
+import builtins
+import sys
+
+forbidden = (
+    "datasets", "ragas", "openai", "mems.config",
+    "mems.infrastructure.persistence.database",
+    "mems.interfaces.bootstrap",
+)
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if any(name == item or name.startswith(item + ".") for item in forbidden):
+        raise AssertionError(f"eager import: {name}")
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import mems_benchmark_ragas
+assert not any(
+    name == item or name.startswith(item + ".")
+    for name in sys.modules
+    for item in forbidden
+)
+"""
+    completed = subprocess.run(
+        [sys.executable, "-W", "error::DeprecationWarning", "-c", code],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr

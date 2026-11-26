@@ -9,11 +9,11 @@
 | Content-Type | `application/json` |
 | Default Base URL | `http://localhost:8210` |
 
-Remember one memory: write the L0 hot snapshot synchronously and, in the same
-transaction, persist the L1 episodic master record and enqueue vector-sync and
-distillation-trigger events. Mems accepts only memory content and identity
-fields — never runtime state (session context, task goals, active plans, etc.
-belong to the caller).
+Remember one memory: persist the L1 episodic master record and enqueue vector-sync
+and distillation-trigger events in one transaction, then update the L0 hot cache
+on a best-effort basis. If Redis is unavailable, the durable L1 write still
+succeeds. Mems accepts only memory content and identity fields — never runtime
+state (session context, task goals, active plans, etc. belong to the caller).
 
 ## Request Parameters
 
@@ -22,8 +22,8 @@ The request body is JSON:
 | Field | Type | Required | Default | Constraint | Meaning |
 | --- | --- | --- | --- | --- | --- |
 | `agent_id` | string | yes | — | non-empty | agent boundary |
-| `content` | string | conditional | `null` | non-empty | memory text; at least one of `content` / `messages` must be provided |
-| `messages` | array | conditional | `[]` | items below | structured source messages; at least one of `content` / `messages` must be provided |
+| `content` | string | conditional | `null` | non-empty, at most 32000 chars by default | memory text; at least one of `content` / `messages` must be provided |
+| `messages` | array | conditional | `[]` | at most 100 items by default; item limits below | structured source messages; at least one of `content` / `messages` must be provided |
 | `tenant_id` | string | no | `null` | — | tenant hard boundary |
 | `user_id` | string | no | `null` | — | user hard boundary; pass it explicitly in multi-user scenarios |
 | `session_id` | string | no | `null` | — | action provenance (not an isolation boundary) |
@@ -31,12 +31,14 @@ The request body is JSON:
 | `ttl_seconds` | number | no | `1800` | 1-604800 | TTL of the L0 hot snapshot (seconds); L1 records are not affected by this value |
 | `importance_score` | number | no | `0.5` | 0-1 | importance, used for distillation priority |
 
+The canonical JSON key combining identity and namespace (including version labels and separators) must fit within **512 UTF-8 bytes**. Larger partitions return HTTP 422. This also applies to the default partition when namespace is omitted.
+
 `messages` item format:
 
 | Field | Type | Required | Constraint | Meaning |
 | --- | --- | --- | --- | --- |
 | `role` | string | yes | 1-32 chars | message role (e.g. `user` / `assistant` / `system`) |
-| `content` | string | yes | non-empty | message content |
+| `content` | string | yes | non-empty, at most 32000 chars by default | message content |
 
 ### Choosing Between content and messages
 
@@ -100,6 +102,7 @@ curl -X POST http://localhost:8210/v1/mems/write \
   ],
   "appended_count": 2,
   "persisted_to_l1": true,
+  "hot_cache_written": true,
   "l1_id": 101,
   "message": "Memory remembered and persisted to L1"
 }
@@ -117,6 +120,7 @@ curl -X POST http://localhost:8210/v1/mems/write \
 | `messages` | array | structured messages from this request (not the merged full buffer) |
 | `appended_count` | number | number of messages appended by this request |
 | `persisted_to_l1` | boolean | whether the L1 master record was persisted |
+| `hot_cache_written` | boolean | whether the L0 cache update succeeded; false still returns HTTP 200 when L1 is durable |
 | `l1_id` | number \| null | id of the new L1 record |
 | `message` | string | human-readable result message |
 
@@ -131,7 +135,8 @@ partition for the identity.
 
 ### 1. L0 hot snapshot
 
-- the key is composed from identity + `session_id`;
+L0 is updated only after the L1 transaction commits. Its key is composed from
+identity + `session_id`; an Identity-level sorted index bounds recall reads.
 - when a snapshot already exists for the same session, new messages are
   **appended**; once the short-term buffer exceeds 20 messages, the oldest are
   dropped (`DEFAULT_CONTEXT_WINDOW`);
@@ -142,6 +147,8 @@ partition for the identity.
   oldest.
 
 ### 2. L1 master record
+
+This is the primary persistence step and happens before L0.
 
 - every call inserts a new Episodic row (`mems_l1_episodic`) — it never
   overwrites an older record;
@@ -176,10 +183,12 @@ unaffected.
 | `messages` item missing `role`/`content` | `422` | model validation failed |
 | `ttl_seconds` outside 1-604800 | `422` | model validation failed |
 | `importance_score` outside 0-1 | `422` | model validation failed |
-| internal service exception (database/Redis, etc.) | `500` | `detail` carries the exception |
+| field/body limits exceeded | `413` / `422` | body byte limit returns 413; field limits return 422 |
+| internal database/service exception | `500` | generic error with a correlated request id |
 
-> When Redis is unavailable, the L0 write and the whole request fail (the
-> current implementation does not silently degrade by skipping L0).
+> When Redis is unavailable after L1 commits, the request still returns HTTP 200
+> with `persisted_to_l1=true`, `hot_cache_written=false`, and `appended_count=0`.
+> A database failure never writes L0.
 
 ## Notes
 

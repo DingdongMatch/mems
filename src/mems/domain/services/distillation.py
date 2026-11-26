@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from mems.domain.identity import Importance
@@ -12,6 +13,10 @@ from mems.domain.memory import EpisodicMemory
 
 
 MIN_DISTILL_IMPORTANCE = 0.5
+_MIN_ASCII_LENGTH = 8
+_MIN_CJK_LENGTH = 2
+_ASCII_NOISE = re.compile(r"\b(?:thanks|thank\s+you|ok|okay)\b", re.IGNORECASE)
+_CJK_NOISE = ("你好", "谢谢", "收到", "好的")
 
 
 def is_high_value(importance_score: float, threshold: float) -> bool:
@@ -39,17 +44,21 @@ def filter_record(content: str) -> Optional[str]:
     """
     content = content.strip()
     lowered = content.lower()
-    noise_markers = ["你好", "谢谢", "thanks", "thank you", "收到", "ok", "好的"]
 
     if not content:
         return "empty"
-    if len(content) < 8:
+    cjk_length = len(re.findall(r"[\u4e00-\u9fff]", content))
+    minimum_length = _MIN_CJK_LENGTH if cjk_length else _MIN_ASCII_LENGTH
+    measured_length = cjk_length if cjk_length else len(content)
+    if measured_length < minimum_length:
         return "low_signal"
     if (
         all(marker in lowered for marker in ["user:", "assistant:"])
         and len(content) < 30
     ):
         return "low_signal"
-    if any(marker in lowered for marker in noise_markers) and len(content) < 40:
+    if (_ASCII_NOISE.search(lowered) or any(m in lowered for m in _CJK_NOISE)) and len(
+        content
+    ) < 40:
         return "greeting"
     return None

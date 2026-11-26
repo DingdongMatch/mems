@@ -37,6 +37,7 @@ class WriteMemoryResult(BaseModel):
     messages: List[Dict[str, str]] = Field(default_factory=list)
     appended_count: int = 0
     persisted_to_l1: bool = False
+    hot_cache_written: bool = False
     l1_id: Optional[int] = None
     message: str
 
@@ -70,17 +71,17 @@ class HealthCheckItem(BaseModel):
 
 
 class MonitorPipelineStatus(BaseModel):
-    pending_distill: int
-    pending_archive: int
-    recent_failures: int = 0
+    pending_distill: Optional[int] = None
+    pending_archive: Optional[int] = None
+    recent_failures: Optional[int] = None
     l0_pipeline_enabled: bool = False
-    profile_items: int = 0
-    fact_items: int = 0
-    summary_items: int = 0
-    conflict_count: int = 0
-    stale_profile_items: int = 0
-    stale_fact_items: int = 0
-    stale_summary_items: int = 0
+    profile_items: Optional[int] = None
+    fact_items: Optional[int] = None
+    summary_items: Optional[int] = None
+    conflict_count: Optional[int] = None
+    stale_profile_items: Optional[int] = None
+    stale_fact_items: Optional[int] = None
+    stale_summary_items: Optional[int] = None
 
 
 class MonitorStatusResponse(BaseModel):
@@ -108,6 +109,8 @@ class ArchiveResponse(BaseModel):
 
 class RedistillResponse(BaseModel):
     success: bool
+    attempted: int = Field(default=0, description="Eligible sources attempted, including failures")
+    failed: int = Field(default=0, description="Source processing failures; no progress is saved")
     processed: int
     created: int
     updated: int
@@ -144,5 +147,6 @@ class MemsWriteResponse(BaseModel):
     messages: List[Dict[str, str]] = Field(default_factory=list)
     appended_count: int = 0
     persisted_to_l1: bool = False
+    hot_cache_written: bool = False
     l1_id: Optional[int] = None
     message: str

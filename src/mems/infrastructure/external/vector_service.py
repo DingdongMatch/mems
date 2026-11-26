@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any, Optional
 
+from pydantic import SecretStr
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from mems.config import settings
 from mems.domain.knowledge import Summary
@@ -18,6 +21,10 @@ from mems.infrastructure.external.vector_payload import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _secret_text(value: SecretStr | str) -> str:
+    return value.get_secret_value() if isinstance(value, SecretStr) else value
 
 
 class VectorService:
@@ -33,7 +40,7 @@ class VectorService:
             if settings.QDRANT_URL:
                 self._client = AsyncQdrantClient(
                     url=settings.QDRANT_URL,
-                    api_key=settings.QDRANT_API_KEY or None,
+                    api_key=_secret_text(settings.QDRANT_API_KEY) or None,
                     timeout=settings.QDRANT_TIMEOUT,
                     check_compatibility=False,
                     prefer_grpc=settings.QDRANT_PREFER_GRPC,
@@ -44,7 +51,7 @@ class VectorService:
                 self._client = AsyncQdrantClient(
                     host=settings.QDRANT_HOST,
                     port=settings.QDRANT_PORT,
-                    api_key=settings.QDRANT_API_KEY or None,
+                    api_key=_secret_text(settings.QDRANT_API_KEY) or None,
                     timeout=settings.QDRANT_TIMEOUT,
                     check_compatibility=False,
                     prefer_grpc=settings.QDRANT_PREFER_GRPC,
@@ -183,6 +190,7 @@ class VectorService:
         top_k: int = 5,
         filter_agent_id: Optional[str] = None,
         filters: Optional[dict[str, str]] = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         client = await self._get_client()
         must_conditions: list[models.FieldCondition] = []
@@ -212,6 +220,7 @@ class VectorService:
             query=query_vector,
             query_filter=query_filter,
             limit=top_k,
+            offset=offset,
             with_payload=True,
             with_vectors=False,
             timeout=settings.QDRANT_TIMEOUT,
@@ -242,13 +251,33 @@ class VectorService:
 
         client = await self._get_client()
         selector = models.PointIdsList.model_validate({"points": point_ids})
-        await client.delete(
-            collection_name=collection_name,
-            points_selector=selector,
-            wait=True,
-            timeout=settings.QDRANT_TIMEOUT,
-        )
+        try:
+            await client.delete(
+                collection_name=collection_name,
+                points_selector=selector,
+                wait=True,
+                timeout=settings.QDRANT_TIMEOUT,
+            )
+        except UnexpectedResponse as exc:
+            if exc.status_code != 404:
+                raise
+            # A collection never created (or already removed) has no replica.
+
         return True
+
+    async def close(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        self._client = None
+        self._known_collections.clear()
+        self._indexed_collections.clear()
+        result = client.close()
+        if inspect.isawaitable(result):
+            await result
+
+    async def aclose(self) -> None:
+        await self.close()
 
 
 vector_service = VectorService()
@@ -256,3 +285,8 @@ vector_service = VectorService()
 
 async def get_vector_service() -> VectorService:
     return vector_service
+
+
+async def close_vector_service() -> None:
+    """Close the shared vector client without creating a new connection."""
+    await vector_service.close()

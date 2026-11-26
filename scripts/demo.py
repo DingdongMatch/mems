@@ -23,9 +23,10 @@ def main() -> None:
         response = client.post(
             "/v1/mems/write",
             json={
+                "tenant_id": "demo-tenant",
                 "agent_id": "demo-agent",
                 "user_id": "demo-user",
-                "scope": "private",
+                "namespace": ["demos", "quick-start"],
                 "importance_score": 0.9,
                 "messages": [
                     {
@@ -42,9 +43,10 @@ def main() -> None:
         response = client.post(
             "/v1/mems/query",
             json={
+                "tenant_id": "demo-tenant",
                 "agent_id": "demo-agent",
                 "user_id": "demo-user",
-                "scope": "private",
+                "namespace": ["demos", "quick-start"],
                 "query": "What programming language do I like?",
                 "top_k": 5,
             },
@@ -63,7 +65,16 @@ def main() -> None:
         print(f"pipeline: {status['pipeline']}")
 
         print("\n== 4. redistill (no-op without archived records) ==")
-        response = client.post("/v1/mems/redistill", json={"min_importance": 0.0})
+        response = client.post(
+            "/v1/mems/redistill",
+            json={
+                "tenant_id": "demo-tenant",
+                "user_id": "demo-user",
+                "agent_id": "demo-agent",
+                "namespace": ["demos", "quick-start"],
+                "min_importance": 0.0,
+            },
+        )
         response.raise_for_status()
         print(json.dumps(response.json(), ensure_ascii=False, indent=2))
 

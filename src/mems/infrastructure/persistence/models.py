@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import Column, Index, UniqueConstraint, text
+from sqlalchemy import Column, DateTime, Index, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field, SQLModel
 
@@ -38,7 +38,7 @@ class MemsL1Episodic(SQLModel, table=True):
         Index(
             "ix_l1_pending_distill",
             "agent_id",
-            postgresql_where=text("is_distilled = false"),
+            postgresql_where=text("is_distilled = false AND is_archived = false"),
         ),
         Index(
             "ix_l1_pending_archive",
@@ -54,6 +54,7 @@ class MemsL1Episodic(SQLModel, table=True):
     session_id: Optional[str] = None
     namespace: Optional[str] = None
     content: str
+    version: int = 1
     vector_id: str = Field(unique=True)
     importance_score: float = 0.0
     is_distilled: bool = False
@@ -61,11 +62,16 @@ class MemsL1Episodic(SQLModel, table=True):
     vector_status: str = "pending"
     archive_status: str = "pending"
     last_sync_error: Optional[str] = None
-    last_sync_at: Optional[datetime] = None
+    last_sync_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     messages_json: List[Dict[str, str]] = Field(
         default_factory=list, sa_column=Column(JSONB)
     )
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MemsL2ProfileItem(SQLModel, table=True):
@@ -94,6 +100,18 @@ class MemsL2ProfileItem(SQLModel, table=True):
             "last_verified_at",
             postgresql_where=text("status = 'active'"),
         ),
+        Index(
+            "uq_l2_profile_active_key",
+            "tenant_id",
+            "user_id",
+            "agent_id",
+            "namespace",
+            "category",
+            "key",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -109,9 +127,13 @@ class MemsL2ProfileItem(SQLModel, table=True):
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSONB))
     supersedes_id: Optional[int] = None
     version: int = 1
-    first_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    first_seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
     last_verified_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 
@@ -152,6 +174,19 @@ class MemsL2Fact(SQLModel, table=True):
             "last_verified_at",
             postgresql_where=text("status = 'active'"),
         ),
+        Index(
+            "uq_l2_fact_active_exact",
+            "tenant_id",
+            "user_id",
+            "agent_id",
+            "namespace",
+            "subject",
+            "predicate",
+            "object",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -168,9 +203,13 @@ class MemsL2Fact(SQLModel, table=True):
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSONB))
     supersedes_id: Optional[int] = None
     version: int = 1
-    first_seen_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    first_seen_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
     last_verified_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 
@@ -180,6 +219,17 @@ class MemsL2Event(SQLModel, table=True):
     __tablename__ = "mems_l2_event"
     __table_args__ = (
         Index("ix_l2_event_recall", "agent_id", text("created_at DESC")),
+        Index(
+            "uq_l2_event_semantic_identity",
+            "tenant_id",
+            "user_id",
+            "agent_id",
+            "namespace",
+            "semantic_hash",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text("semantic_hash IS NOT NULL"),
+        ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -191,9 +241,13 @@ class MemsL2Event(SQLModel, table=True):
     action: str
     object: str
     time_hint: Optional[str] = None
+    semantic_hash: Optional[str] = None
     importance_score: int = 5
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSONB))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MemsL2Summary(SQLModel, table=True):
@@ -216,11 +270,17 @@ class MemsL2Summary(SQLModel, table=True):
     vector_id: Optional[str] = Field(default=None, unique=True)
     vector_status: str = "pending"
     last_sync_error: Optional[str] = None
-    last_sync_at: Optional[datetime] = None
+    last_sync_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSONB))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
     last_verified_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc)
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
     )
 
 
@@ -240,7 +300,10 @@ class MemsL2ConflictLog(SQLModel, table=True):
     resolution: str
     reason: str = ""
     source_l1_ids: List[int] = Field(default_factory=list, sa_column=Column(JSONB))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MemsL3Archive(SQLModel, table=True):
@@ -257,7 +320,10 @@ class MemsL3Archive(SQLModel, table=True):
     summary_text: str
     file_path: str
     record_count: int = 0
-    archived_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    archived_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MemsRedistillProgress(SQLModel, table=True):
@@ -273,7 +339,10 @@ class MemsRedistillProgress(SQLModel, table=True):
     model: str
     l3_path: Optional[str] = None
     l3_line: Optional[int] = None
-    processed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    processed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
 
 
 class MemsOutbox(SQLModel, table=True):
@@ -281,22 +350,55 @@ class MemsOutbox(SQLModel, table=True):
 
     __tablename__ = "mems_outbox"
     __table_args__ = (
-        Index("ix_outbox_claim", "status", "available_at", "id"),
         Index(
-            "ix_outbox_dedupe",
+            "ix_outbox_claim",
+            "status",
+            "available_at",
+            "id",
+            postgresql_where=text("dead = false"),
+        ),
+        Index(
+            "ix_outbox_recent_dead",
+            "dead_at",
+            postgresql_where=text("dead = true"),
+        ),
+        Index(
+            "uq_outbox_active_identity",
             "event_type",
             "aggregate_id",
-            postgresql_where=text("status IN ('pending', 'claimed')"),
+            "tenant_id",
+            "user_id",
+            "agent_id",
+            "namespace",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+            postgresql_where=text(
+                "dead = false AND status IN ('pending', 'claimed')"
+            ),
         ),
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     event_type: str
     aggregate_id: str
+    tenant_id: Optional[str] = None
+    user_id: Optional[str] = None
+    agent_id: Optional[str] = None
+    namespace: Optional[str] = None
     payload: Dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSONB))
     status: str = "pending"
     attempts: int = 0
     owner: Optional[str] = None
     last_error: Optional[str] = None
-    available_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    dead: bool = False
+    dead_at: Optional[datetime] = Field(
+        default=None, sa_column=Column(DateTime(timezone=True), nullable=True)
+    )
+    available_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True), nullable=False),
+    )

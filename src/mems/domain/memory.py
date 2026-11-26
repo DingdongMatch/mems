@@ -106,6 +106,7 @@ class EpisodicMemory(BaseModel):
     session_id: Optional[str] = None
     namespace: Optional[str] = None
     content: str
+    version: int = 1
     messages: list[dict[str, str]] = Field(default_factory=list)
     vector_id: str
     importance_score: float = 0.5

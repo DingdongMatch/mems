@@ -12,10 +12,12 @@ from typing import Optional
 from mems.application.commands import ArchiveResponse
 from mems.config import settings
 from mems.domain.archive import ArchiveBatch
+from mems.domain.outbox import OutboxEvent, OutboxEventType, outbox_aggregate_key
 from mems.domain.ports import (
     ArchiveRepository,
     Clock,
     EpisodicRepository,
+    OutboxRepository,
     UnitOfWork,
 )
 
@@ -32,11 +34,13 @@ class ArchiveApplicationService:
         archive: ArchiveRepository,
         clock: Clock,
         uow: UnitOfWork,
+        outbox: OutboxRepository,
     ) -> None:
         self._episodic = episodic
         self._archive = archive
         self._clock = clock
         self._uow = uow
+        self._outbox = outbox
 
     async def archive(
         self,
@@ -45,6 +49,7 @@ class ArchiveApplicationService:
         user_id: Optional[str] = None,
         namespace: Optional[str] = None,
         days: int = 30,
+        batch_id: Optional[str] = None,
     ) -> ArchiveResponse:
         cutoff_date = self._clock.now() - timedelta(days=days)
         l1_records = self._episodic.list_expired(
@@ -63,14 +68,15 @@ class ArchiveApplicationService:
         archive_dir.mkdir(parents=True, exist_ok=True)
 
         time_period = f"{self._clock.now().strftime('%Y_%m')}_Monthly"
-        batch_id = self._clock.now().strftime("%Y%m%dT%H%M%S%f")
+        batch_id = batch_id or self._clock.now().strftime("%Y%m%dT%H%M%S%f")
+        batch_suffix = hashlib.sha256(batch_id.encode()).hexdigest()[:16]
         namespace_suffix = hashlib.sha256((namespace or "default").encode()).hexdigest()[:12]
         user_suffix = hashlib.sha256((user_id or "all_users").encode()).hexdigest()[:12]
         tenant_suffix = hashlib.sha256((tenant_id or "default").encode()).hexdigest()[:12]
         agent_suffix = hashlib.sha256(agent_id.encode()).hexdigest()[:12]
         filename = (
             f"l3_{agent_suffix}_{tenant_suffix}_{user_suffix}_{namespace_suffix}_"
-            f"{time_period}_{batch_id}.jsonl"
+            f"{time_period}_{batch_suffix}.jsonl"
         )
         filepath = archive_dir / filename
         temp_filepath = archive_dir / f".{filename}.tmp"
@@ -125,6 +131,20 @@ class ArchiveApplicationService:
         )
 
         for l1_record in l1_records:
+            self._outbox.add(
+                OutboxEvent(
+                    event_type=OutboxEventType.VECTOR_DELETE,
+                    aggregate_id=outbox_aggregate_key(
+                        OutboxEventType.VECTOR_DELETE,
+                        resource=l1_record.vector_id,
+                    ),
+                    tenant_id=l1_record.tenant_id,
+                    user_id=l1_record.user_id,
+                    agent_id=l1_record.agent_id,
+                    namespace=l1_record.namespace,
+                    payload={"vector_id": l1_record.vector_id},
+                )
+            )
             l1_record.mark_archived(self._clock.now())
             self._episodic.save(l1_record)
 
